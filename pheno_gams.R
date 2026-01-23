@@ -1,6 +1,6 @@
 # Clean environment and set the working directory to the location of the data files
 rm(list = ls())  # Remove all objects from the current R session to ensure a clean working environment
-setwd("E:/URBAN TRENDS/BMS data/BMS DATA 2024")  
+setwd("D:/phenoIMPACT project/ebms data/eBMS dataset 2025")  
 
 # Load required libraries
 # ----
@@ -17,8 +17,8 @@ library(sf)
 # ----
 
 
-# ---- Data Import and Preparation --- #
-#----
+# ---- Data Import and Preparation ---- #
+#-----
 # eBMS data
 
 # Import butterfly count data
@@ -37,71 +37,11 @@ ebms_clim_df <- ebms_clim_df %>%
   mutate(bms_id = str_extract(transect_id, "^[^.]*")) %>%
   dplyr::select(bms_id, transect_id, genzname)
 
-# uBMS data
-# Import count data
-ubms_count_df <- read.csv("output_count_table.csv", sep = ",", dec = ".")
-# Assign a unique identifier to uBMS data
-ubms_count_df$bms_id <- "ES-uBMS"
-# Select and reorder columns to match the structure of eBMS count data
-ubms_count_df <- ubms_count_df %>%
-  dplyr::select(visit_id, bms_id, transect_id, visit_date, year, month, day, species_name, count)
-
-# Import visit data and perform necessary transformations
-ubms_visit_df <- read.csv("raw_ubms_ebms_visit.csv", sep = ",", dec = ".")
-ubms_visit_df$bms_id <- "ES-uBMS"  # Assign the uBMS identifier
-
-# Rename columns and calculate date components
-ubms_visit_df <- ubms_visit_df %>%
-  rename(visit_date = date_of_visit) %>%
-  mutate(
-    visit_date = ymd(visit_date),
-    year = year(visit_date),
-    month = month(visit_date),
-    day = day(visit_date),
-    week = week(visit_date),
-    ebms_partner = TRUE
-  )
-
-# Adjust column order to match eBMS visit data structure
-ubms_visit_df <- ubms_visit_df %>%
-  dplyr::select(visit_id, bms_id, transect_id, visit_date, year, month, day, ebms_partner, week)
-
-# Import transect cooordinates
-ubms_coord <- read.csv("ubms_sites.csv", sep = ";", dec = ".")
-
-ubms_coord <- ubms_coord %>%mutate(bms_id = "ES-uBMS")
-
-# Filter out rows with NA in coordinates before transformation
-ubms_coord_filtered <- ubms_coord %>%
-  filter(!is.na(transect_longitude) & !is.na(transect_latitude))
-
-# Convert to an sf object
-ubms_coord_sf <- st_as_sf(ubms_coord_filtered, coords = c("transect_longitude", "transect_latitude"), crs = 4326, remove = FALSE)
-
-# Transform coordinates to EPSG:3035
-ubms_coord_transformed <- st_transform(ubms_coord_sf, crs = 3035)
-
-ubms_coord_final <- data.frame(ubms_coord_transformed) %>%
-  transmute(
-    bms_id,
-    transect_id,
-    transect_length,
-    transect_lon = st_coordinates(ubms_coord_transformed)[, 1],
-    transect_lat = st_coordinates(ubms_coord_transformed)[, 2]
-  )
-
-## Concatenate rows
-
-m_count_df <- rbind(ebms_count_df, ubms_count_df)
-m_visit_df<- rbind(ebms_visit_df, ubms_visit_df)
-m_clim_df<- ebms_clim_df
-m_coord<- rbind(ebms_coord_df, ubms_coord_final)
-
 ## Transform data frames to data tables
 
-m_count <- data.table(m_count_df)
-m_visit <- data.table(m_visit_df)
-m_clim <- data.table(m_clim_df)
+m_count <- data.table(ebms_count_df)
+m_visit <- data.table(ebms_visit_df)
+m_clim <- data.table(ebms_clim_df)
 dt_country_cod <- data.table(country_codes)
 
 ## Change column names
@@ -122,9 +62,6 @@ m_count <- left_join(m_count, m_clim, by = c("SITE_ID", "bms_id"))
 # Merge m_count with dt_country_cod to include country_code
 m_count <- merge(m_count, dt_country_cod, by = "bms_id", all.x = TRUE)
 
-#NA values in RCLIM correspond to uBMS transects. All of them are part of climate region K
-m_count$RCLIM <- replace(m_count$RCLIM, is.na(m_count$RCLIM), "K. Warm temperate and mesic")
-
 # Create and ID factor
 m_count$ID <- paste(m_count$SPECIES, m_count$SITE_ID, sep = "_")
 
@@ -136,25 +73,9 @@ m_visit$year <- as.factor(m_visit$year)
 head(m_count)
 head(m_visit)
 
-# --- Filter data by univoltine species --- #
-#----
 
-setwd("E:/URBAN TRENDS/Traits data")  
-traits <- read.csv("Traits_table.csv", sep = ";", dec = ".")
 
-traits <- traits %>% rename(SPECIES = Taxon) %>% mutate(SPECIES = gsub("_", " ", SPECIES))
-
-# Identify multivoltine species
-multi_sp <- traits %>%
-  filter(Vol_max >= 2) %>% # especies que com a mínim facin 2 generacions en algun lloc, i.e. potencialment multivoltines
-  pull(SPECIES)
-
-# Filter m_count for unvoltine species
-m_count_multivol<- m_count %>%
-  filter(SPECIES %in% multi_sp)
-#----
-
-# --- Calculate pheno estimates for univoltines butterflies --- #
+# --- Calculate pheno estimates  --- #
 
 # Create an anchor argument to add zeros (0) before and after the monitoring season 
 # This ensures that the flight curve starts and end at zero
@@ -182,7 +103,7 @@ anchor <- data.table(
 # Function to find local maxima (i.e. peak abundance)
 
 find_peaks <- function(x = pred$pred,
-                       ignore_threshold = 0.0,
+                       ignore_threshold = 0,
                        span = 3,
                        strict = TRUE) {
   range_x <- range(x, finite = TRUE)
@@ -223,11 +144,11 @@ phenology_estimates <- data.frame(ID = numeric(),
 
 
 # Create a progress bar with an estimated total count
-pb <- progress_estimated(length(unique(m_count_multivol$ID)))
+pb <- progress_estimated(length(unique(m_count$ID)))
 
-for(id in unique(m_count_multivol$ID)){
+for(id in unique(m_count$ID)){
   
-  sub_count <- m_count_multivol[ID == id]
+  sub_count <- m_count[ID == id]
   site <- unique(sub_count$SITE_ID)
   
   # Update the progress bar
@@ -359,11 +280,11 @@ for(id in unique(m_count_multivol$ID)){
 head(phenology_estimates)
 
 # Specify the file path and name
-file_path <- "E:/URBAN TRENDS/Urban_pheno/pheno_estimates_multivoltine.csv"
+file_path <- "D:/phenoIMPACT project/outputs/pheno_estimates.csv"
 
 # Save as a CSV file
 write.csv(phenology_estimates, file = file_path, row.names = FALSE)
 
-
+# ----
 
 
