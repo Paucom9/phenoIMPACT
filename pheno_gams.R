@@ -1,6 +1,17 @@
-# Clean environment and set the working directory to the location of the data files
-rm(list = ls())  # Remove all objects from the current R session to ensure a clean working environment
-setwd("D:/phenoIMPACT project/ebms data/eBMS dataset 2025")  
+# ============================================================================================
+# 01_pheno_gams.R
+#
+# Author: Pau Colom
+# Date: 2026-02-19
+#
+# Desciription: This script fits generalized additive models (GAMs) to butterfly count data 
+# from the eBMS to estimate phenological parameters such as onset, offset, peak day, 
+# and flight length for each species × site × year combination. 
+# The script includes data import and preparation, site and species filtering, GAM fitting, 
+# phenology estimation, and exploratory analyses of the resulting phenology estimates.
+#
+# ============================================================================================
+
 
 # Load required libraries
 # ----
@@ -15,25 +26,28 @@ library(doParallel)  # For increasing loop performance
 library(changepoint) # For change point analyses
 library(sf)          # For handling spatial data
 library(ggplot2)   # For data visualization
-library(reshape2)
+library(reshape2)     # For reshaping data frames
+library(here)       # For constructing file paths in a way that is independent of the operating system
 
 # ----
 
-
 # ---- Data Import and Preparation ---- #
+
+here::here() # Check the current working directory
+
 #-----
 # eBMS data
 
 # Import butterfly count data
-ebms_count_df <- read.csv("ebms_count.csv", sep = ",", dec = ".")
+ebms_count_df  <- read.csv(here("data", "ebms_count.csv"), sep = ",", dec = ".")
 # Import visit data
-ebms_visit_df <- read.csv("ebms_visit.csv", sep = ",", dec = ".")
+ebms_visit_df  <- read.csv(here("data", "ebms_visit.csv"), sep = ",", dec = ".")
 # Import climate region data
-ebms_clim_df <- read.csv("ebms_transect_climate.csv", sep = ",", dec = ".")
+ebms_clim_df   <- read.csv(here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
 # Import transect coordinates
-ebms_coord_df <- read.csv("ebms_transect_coord.csv", sep = ",", dec = ".")
+ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
 # Import country codes
-country_codes <- read.csv("country_codes.csv", sep = ";", dec = ".")
+country_codes  <- read.csv(here("data", "country_codes.csv"), sep = ";", dec = ".")
 
 # Extract bms_id from transect_id and select relevant columns
 ebms_clim_df <- ebms_clim_df %>%
@@ -233,7 +247,7 @@ for (id in unique(mj_count$ID)) {
         year = YEAR,
         SPECIES = unique(sub_count_year$SPECIES),
         COUNT = 0,
-        julian_day = c(1:30, 305:365)  # Jan–early Feb & Oct–Dec
+        julian_day = c(1:30, 335:365)  # Jan–early Feb & Oct–Dec
       )
       
       all_counts <- rbind(all_counts, anchor_year, fill = TRUE)
@@ -323,12 +337,14 @@ for (id in unique(mj_count$ID)) {
 #----
 
 head(phenology_estimates)
+str(phenology_estimates)
 
-# Specify the file path and name
-file_path <- "D:/phenoIMPACT project/outputs/pheno_estimates.csv"
-
-# Save as a CSV file
-write.csv(phenology_estimates, file = file_path, row.names = FALSE)
+# Save as CSV inside project
+write.csv(
+  phenology_estimates,
+  file = here("output", "pheno_estimates.csv"),
+  row.names = FALSE
+)
 
 # ----
 
