@@ -28,6 +28,7 @@ figures/
 .Rhistory
 .Rapp.history
 .RData
+.RDataTmp
 .Ruserdata
 .Rproj.user/
 *.Rproj.user
