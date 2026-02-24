@@ -37,15 +37,15 @@ here::here() # Check the current working directory
 
 # --- eBMS data
 # Import butterfly count data
-ebms_count_df  <- read.csv(here("data", "ebms_count.csv"), sep = ",", dec = ".")
+ebms_count_df  <- read.csv(here::here("data", "ebms_count.csv"), sep = ",", dec = ".")
 # Import visit data
-ebms_visit_df  <- read.csv(here("data", "ebms_visit.csv"), sep = ",", dec = ".")
+ebms_visit_df  <- read.csv(here::here("data", "ebms_visit.csv"), sep = ",", dec = ".")
 # Import climate region data
-ebms_clim_df   <- read.csv(here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
+ebms_clim_df   <- read.csv(here::here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
 # Import transect coordinates
-ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
+ebms_coord_df  <- read.csv(here::here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
 # Import country codes
-country_codes  <- read.csv(here("data", "country_codes.csv"), sep = ";", dec = ".")
+country_codes  <- read.csv(here::here("data", "country_codes.csv"), sep = ";", dec = ".")
 
 # --- Extract bms_id from transect_id and select relevant columns
 ebms_clim_df <- ebms_clim_df %>%
