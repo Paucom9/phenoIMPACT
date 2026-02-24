@@ -1,5 +1,5 @@
 # ============================================================================================ #
-# 02_pheno_trends.R
+# pheno_trends.R
 #
 # Author: Pau Colom
 # Date: 2026-02-19
@@ -29,26 +29,21 @@ library(patchwork)
 library(mgcv)
 library(sf)
 library(rnaturalearth)
+# ---
 
 
-# ----
 
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
-
-#-----
-
+# ---
 df  <- read.csv(here("output", "pheno_estimates_allspp.csv"), sep = ",", dec = ".")
-
 str(df)
+# ---
 
-#-----
 
-
-# ---- Calculate phenological trends ---- #
-
-# Select variables
+#### Calculate phenological trends ####
+# --- Select variables
 vars_pheno <- c(
   "ONSET_mean",
   "ONSET_var",
@@ -59,13 +54,13 @@ vars_pheno <- c(
   "FLIGHT_LENGTH_var"
 )
 
-# 1) number of years per species × site
+# ---  number of years per species × site
 n_years_df <- df |>
   mutate(YEAR_num = as.numeric(as.character(YEAR))) |>
   group_by(SPECIES, SITE_ID) |>
   summarise(N_years = n(), .groups = "drop")
 
-# 2) trends for all phenology variables
+# --- trends for all phenology variables
 pheno_trends_site <- map_dfr(vars_pheno, function(v) {
   
   df %>%
@@ -111,7 +106,7 @@ pheno_trends_site <- map_dfr(vars_pheno, function(v) {
 head(pheno_trends_site)
 str(pheno_trends_site)
 
-# Save as CSV inside project
+# --- Save as CSV inside project
 write.csv(
   pheno_trends_site,
   file = here("output", "pheno_temporal_trends_allspp.csv"),

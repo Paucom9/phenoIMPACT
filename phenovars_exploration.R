@@ -4,13 +4,17 @@
 # Author: Pau Colom
 # Date: 2026-02-20
 #
-# Desciription:
+# Desciription: This script explores the phenological variables estimated for each species × 
+# site combination. It includes visualizations of the distributions of these variables, 
+# a correlation matrix to examine relationships between them, and scatter plots to investigate 
+# potential associations with latitude. The goal is to gain insights into the patterns and 
+# relationships in the phenological data before conducting further analyses.
 #
 # ============================================================================================ #
 
 
 #### Load required libraries ####
-# ----
+# ---
 library(data.table)  # For efficient data handling
 library(mgcv)        # For generalized additive models
 library(dplyr)       # For data manipulation
@@ -24,27 +28,21 @@ library(sf)          # For handling spatial data
 library(ggplot2)   # For data visualization
 library(reshape2)     # For reshaping data frames
 library(here)       # For constructing file paths in a way that is independent of the operating system
+# ---
 
-
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
-
-#-----
-
+# ---
 phenology_estimates  <- read.csv(here("output", "pheno_estimates_allspp.csv"), sep = ",", dec = ".")
-
 str(phenology_estimates)
-
-
-##### Output exploration #####
 
 head(phenology_estimates)
 str(phenology_estimates)
 summary(phenology_estimates)
 
 
-# --- Plot distributions of phenology variables --- #####
+#### Plot distributions of phenology variables ####
 vars <- c(
   "N_PEAKS",
   "ONSET_mean", "ONSET_var",
@@ -74,7 +72,7 @@ ggplot(ph_long, aes(x = value)) +
   facet_wrap(~var, scales = "free") +
   theme_minimal()
 
-# --- Correlation matrix of phenology variables --- #####
+#### Correlation matrix of phenology variables ####
 vars_pheno <- c(
   "ONSET_mean",
   "ONSET_var",
@@ -108,7 +106,7 @@ ggplot(cor_df, aes(Var1, Var2, fill = value)) +
   )
 
 
-# --- Test relationships between phenology variables and latitude/longitude --- #####
+#### Test relationships between phenology variables and latitude/longitude ####
 
 # Merge phenology estimates with transect coordinates
 pheno_geo <- phenology_estimates |>
@@ -117,7 +115,6 @@ pheno_geo <- phenology_estimates |>
     by = c("SITE_ID" = "transect_id")
   )
 head(pheno_geo)
-
 
 vars_pheno <- c(
   "ONSET_mean",

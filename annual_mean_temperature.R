@@ -1,16 +1,20 @@
 # ============================================================================================
-# 03_annual_mean_temperature.R
+# annual_mean_temperature.R
 #
 # Author: Pau Colom
 # Date: 2026-02-19
 #
-# Desciription: 
+# Desciription: This script extracts mean annual temperature data for each transect site 
+# across four defined time periods. It uses the `climateExtract` package to retrieve 
+# climate data, processes it to calculate annual averages, and compiles the results into a 
+# comprehensive dataset. The final outputs include both the full annual dataset and a 
+# summary of mean temperatures per site across the entire time series.
 #
 # ============================================================================================
 
 
-# Load required libraries
-# ----
+#### Load required libraries ####
+# ---
 library(sf)
 library(raster)
 library(climateExtract)
@@ -24,30 +28,27 @@ library(progress)
 library(tidyr)
 library(lubridate)
 library(here)
+# ---
 
-#----
 
-
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
-
-#-----
-# eBMS data
-
+# ---
+# --- eBMS data
 # Import transect coordinates
 ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
 # Import country codes
 country_codes  <- read.csv(here("data", "country_codes.csv"), sep = ";", dec = ".")
 
-#Merge data
+# --- Merge data
 head(ebms_coord_df)
 head(country_codes)
 
 m_coord_c <- merge(ebms_coord_df, country_codes, by = "bms_id", all.x = TRUE)
 m_coord_c<- na.omit(m_coord_c)
 
-# Define the main directory for saving outputs
+# --- Define the main directory for saving outputs
 # Permanent output folder
 output_dir <- here("output", "climate")
 
@@ -62,13 +63,15 @@ if (!dir.exists(temp_dir)) {
   dir.create(temp_dir, recursive = TRUE)
 }
 
-# 
+# Define ECAD periods for estracting mean temperature 
 Period      <- c("1965-1979", "1980-1994", "1995-2010", "2011-2025")
 First_year  <- c(1965, 1980, 1995, 2011)
 Last_year   <- c(1979, 1994, 2010, 2025)
 
 # Store everything here
 combined_results <- data.frame()
+
+#### Loop to extract mean temperatures across sites ####
 
 # Loop across countries
 for (country in unique(m_coord_c$country_code)) {
@@ -160,6 +163,7 @@ for (country in unique(m_coord_c$country_code)) {
 
 cat("Processing complete for all countries.\n")
 
+#### Save the data ####
 
 # View the combined data
 head(combined_results)

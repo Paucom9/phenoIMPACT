@@ -1,15 +1,18 @@
 # ============================================================================================ #
-# 03_pheno_trend_models.R
+# pheno_trend_models.R
 #
 # Author: Pau Colom
 # Date: 2026-02-20
 #
-# Description:
+# Description: This script analyzes phenological trends across different sites and species 
+# by fitting linear mixed models. It explores the distribution of these trends, their 
+# correlations, and how they relate to climatic regions, latitude, and temperature. 
+# The script also includes visualizations to illustrate the findings.
 #
 # ============================================================================================ #
 
 #### Load required libraries ####
-# ----
+# ---
 library(dplyr) # For data manipulation
 library(tidyr) # For data tidying
 library(broom) # For tidying model outputs
@@ -27,24 +30,18 @@ library(patchwork)
 library(mgcv)
 library(sf)
 library(rnaturalearth)
+# ---
 
-
-# ----
-
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
-
-#-----
-
+# ---
 pheno_trends_site  <- read.csv(here("output", "pheno_temporal_trends_allspp.csv"), sep = ",", dec = ".")
-
 str(pheno_trends_site)
+# ---
 
-#-----
-
-
-# --- Plot histograms of trends for each phenology variable --- #
+#### Data exploration ####
+# --- Plot histograms of trends for each phenology variable
 # compute median per phenovar
 median_df <- pheno_trends_site |>
   mutate(trend_decade = estimate * 10) |>
@@ -73,7 +70,7 @@ pheno_trends_site |>
     y = "Number of sites"
   )
 
-# --- Correlation between phenovars --- #
+# --- Correlation between phenovars
 
 cor_mat <- pheno_trends_site |>
   select(SPECIES, SITE_ID, phenovar, estimate) |>
@@ -109,7 +106,6 @@ pheno_trends_wide <- pheno_trends_site |>
   ) |>
   mutate(across(starts_with("FLIGHT_LENGTH"), ~ .x * 10),
          across(c("ONSET_mean", "OFFSET_mean", "PEAKDAY"), ~ .x * 10))
-
 
 
 plot_df <- pheno_trends_wide |>
@@ -154,15 +150,14 @@ ggplot(plot_df, aes(trend, FLIGHT_LENGTH_mean)) +
   )
 
 
-# --- Pheno trends vs. climatic regions --- #
-
+#### Pheno trends vs. climatic regions ####
+# Climate region data
 ebms_clim_df   <- read.csv(here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
 
 pheno_clim_df <- pheno_trends_site |>
   left_join(ebms_clim_df, by = c("SITE_ID" = "transect_id"))
 
 head(pheno_clim_df)
-
 
 models_clim <- pheno_clim_df %>%
   split(.$phenovar) %>%
@@ -174,7 +169,6 @@ models_clim <- pheno_clim_df %>%
     weights = 1 / (std.error^2),
     REML = FALSE
   ))
-
 
 results_fixed <- map_df(
   models_clim,
@@ -271,14 +265,7 @@ ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
     axis.text.x = element_text(face = "bold")
   )
 
-
-
-
-
-
-
-
-# --- Pheno trends vs. latitude --- #
+#### Pheno trends vs. latitude ####
 
 ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
 
@@ -287,7 +274,6 @@ pheno_coord_df <- pheno_trends_site |>
 
 head(pheno_coord_df)
 str(pheno_coord_df)
-
 
 models_latlon <- pheno_coord_df %>%
   split(.$phenovar) %>%
@@ -347,7 +333,6 @@ lrt_results_latlon <- imap_dfr(
 
 lrt_results_latlon
 
-
 # Plot latitudinal effects
 
 pred_latitude <- map_df(
@@ -387,7 +372,7 @@ ggplot(pred_lon, aes(x = x, y = predicted)) +
   )
 
 
-# Gam spatial approach
+# --- Gam spatial approach
 
 pheno_coord_df$SPECIES <- factor(pheno_coord_df$SPECIES)
 pheno_coord_df$SITE_ID <- factor(pheno_coord_df$SITE_ID)
@@ -541,8 +526,8 @@ plots <- lapply(names(models_gam), plot_gam_surface)
 wrap_plots(plots, ncol = 3, guides = "collect") &
   theme(legend.position = "right")
 
-# --- Pheno trends vs. temperature --- #
 
+#### Pheno trends vs. temperature ####
 temp_df  <- read.csv(here("output", "climate", "mean_temperature_site.csv"), sep = ",", dec = ".")
 
 pheno_temp_df <- pheno_trends_site |>
@@ -620,7 +605,6 @@ anova_temp <- pheno_temp_df %>%
 
 anova_temp
 
-
 # Plot effects
 
 desired_order <- c(
@@ -642,7 +626,6 @@ pretty_names <- c(
   FLIGHT_LENGTH_mean = "Flight length (mean)",
   FLIGHT_LENGTH_var = "Flight length (variance)"
 )
-
 
 pred_temp <- purrr::map_df(
   models_temp,

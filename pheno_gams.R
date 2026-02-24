@@ -1,5 +1,5 @@
 # ============================================================================================ #
-# 01_pheno_gams.R
+# pheno_gams.R
 #
 # Author: Pau Colom
 # Date: 2026-02-19
@@ -28,16 +28,14 @@ library(sf)          # For handling spatial data
 library(ggplot2)   # For data visualization
 library(reshape2)     # For reshaping data frames
 library(here)       # For constructing file paths in a way that is independent of the operating system
+# ---
 
-# ----
-
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
+# ---
 
-#-----
-# eBMS data
-
+# --- eBMS data
 # Import butterfly count data
 ebms_count_df  <- read.csv(here("data", "ebms_count.csv"), sep = ",", dec = ".")
 # Import visit data
@@ -49,20 +47,18 @@ ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", d
 # Import country codes
 country_codes  <- read.csv(here("data", "country_codes.csv"), sep = ";", dec = ".")
 
-# Extract bms_id from transect_id and select relevant columns
+# --- Extract bms_id from transect_id and select relevant columns
 ebms_clim_df <- ebms_clim_df %>%
   mutate(bms_id = str_extract(transect_id, "^[^.]*")) %>%
   dplyr::select(bms_id, transect_id, genzname)
 
-## Transform data frames to data tables
-
+# --- Transform data frames to data tables
 m_count <- data.table(ebms_count_df)
 m_visit <- data.table(ebms_visit_df)
 m_clim <- data.table(ebms_clim_df)
 dt_country_cod <- data.table(country_codes)
 
-## Change column names
-
+# --- Change column names
 setnames(m_visit, c('transect_id', 'visit_date'), c('SITE_ID', 'DATE'))
 setnames(m_count, c('transect_id', 'visit_date','species_name', 'count'),
          c('SITE_ID', 'DATE', 'SPECIES', 'COUNT'))
@@ -89,6 +85,7 @@ m_visit$year <- as.factor(m_visit$year)
 # Check count and visit data
 head(m_count)
 head(m_visit)
+# ---
 
 ##### Site filtering #####
 
@@ -129,50 +126,13 @@ head(m_count_filt)
 
 # Explore number of sites per BMS_ID after filtering #
 m_count_filt[, uniqueN(SITE_ID), by = bms_id][order(-V1)]
+# ---
 
 
-#####
-
-##### Species filtering #####
-
-# --- Explore species with most site x year combinations (minimum 3 positive counts) --- #
-
-# Keep only positive counts
-dt_pos <- m_count_filt[COUNT > 0]
-
-# Count distinc weeeks per species x site x year
-spec_sy_weeks <- dt_pos[
-  , .(n_weeks = uniqueN(paste(year, month, day))), 
-  by = .(SPECIES, SITE_ID, year)
-]
-
-# Keep only species x site x year combinations with at least 3 weeks with positive counts
-spec_sy_ok <- spec_sy_weeks[n_weeks >= 3]
-
-# Count valid site × year combos per species
-spec_cov <- spec_sy_ok[
-  , .(n_site_years_3w = .N),
-  by = SPECIES
-][order(-n_site_years_3w)]
-
-# --- Subset Maniola jurtina (species with more data) --- #
-mj_keys <- m_count_filt[
-  SPECIES == "Maniola jurtina",
-  unique(paste(SITE_ID, DATE))
-]
-
-mj_visit <- m_visit_filt[
-  paste(SITE_ID, DATE) %in% mj_keys
-]
-
-mj_count <- m_count_filt[SPECIES == "Maniola jurtina"]
+##### Functions #####
 
 
-
-#####
-
-
-# --- Calculate pheno estimates  --- #
+# --- Calculate pheno estimates
 
 # Function to find local maxima (i.e. peak abundance)
 find_peaks <- function(x,
@@ -194,6 +154,10 @@ find_peaks <- function(x,
     return(ifelse(max_x - x > scaled_threshold, pks, FALSE))
   }
 }
+
+
+##### Loop gams and extract pheno metrics #####
+
 
 # Initialize output
 phenology_estimates <- data.frame(
@@ -342,9 +306,10 @@ for (id in unique(m_count_filt$ID)) {
   
 
 }
+#---
 
-#----
 
+##### Save the data #####
 head(phenology_estimates)
 str(phenology_estimates)
 
@@ -354,8 +319,7 @@ write.csv(
   file = here("output", "pheno_estimates_allspp.csv"),
   row.names = FALSE
 )
-
-# ----
+#---
 
 
 

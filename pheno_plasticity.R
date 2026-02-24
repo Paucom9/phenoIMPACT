@@ -4,11 +4,12 @@
 # Author: Pau Colom
 # Date: 2026-02-20
 #
-# Desciription:
+# Desciription: 
 #
 # ============================================================================================ #
 
 #### Load required libraries ####
+# ---
 library(data.table)  # For efficient data handling
 library(lme4)
 library(dplyr)       # For data manipulation
@@ -17,22 +18,17 @@ library(purrr)
 library(broom.mixed)
 library(performance)
 library(ggplot2)
+# ---
 
-
-
-
-
-# ---- Data Import and Preparation ---- #
-
+#### Data Import and Preparation ####
+# ---
 here::here() # Check the current working directory
-
-#---
-
+# ---
 phenology_estimates  <- read.csv(here("output", "pheno_estimates_allspp.csv"), sep = ",", dec = ".")
 mean_temperature <- read.csv(here("output", "climate", "mean_annual_temperature.csv"), sep = ",", dec = ".")
-
 str(phenology_estimates)
 str(mean_temperature)
+# ---
 
 #### Calculate within-temperature ####
 #(i.e., temporal anomaly around each transect’s long-term mean) ####
@@ -143,8 +139,6 @@ summary(m_explain_sc)
 
 # Check consistency among phenovars #
 
-
-
 df_long <- df |>
   pivot_longer(
     cols = c(
@@ -190,7 +184,7 @@ results <- map_df(
 print(results, n = Inf)
 
 
-# Check multicollinearity #
+#### Check multicollinearity ####
 
 m_vif <- lmer(
   pheno_value ~ temp_within_sc * temp_between_sc +
@@ -204,7 +198,7 @@ m_vif <- lmer(
 performance::check_collinearity(m_vif)
 
 
-# Plot effects #
+#### Plot effects ####
 
 
 plot_df <- results %>%
