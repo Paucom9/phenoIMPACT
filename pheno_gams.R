@@ -309,6 +309,182 @@ for (id in unique(m_count_filt$ID)) {
 #---
 
 
+#### Plot pheno-curve examples ####
+
+plot_pheno_curve <- function(species_pick,
+                             site_pick,
+                             year_pick,
+                             m_count_filt,
+                             m_visit_filt,
+                             pen_mean = 2,
+                             pen_var  = 0.05,
+                             save_plot = FALSE) {
+  
+  
+  # Filter data
+  sub_count <- m_count_filt %>%
+    filter(SPECIES == species_pick,
+           SITE_ID == site_pick,
+           year == year_pick)
+  
+  sub_visit <- m_visit_filt %>%
+    filter(SITE_ID == site_pick,
+           year == year_pick)
+  
+  if(nrow(sub_count) == 0)
+    stop("No data for this species-site-year combination.")
+  
+  # Dates
+  sub_count$DATE <- as.Date(sub_count$DATE)
+  sub_visit$DATE <- as.Date(sub_visit$DATE)
+  
+  sub_count$julian_day <- yday(sub_count$DATE)
+  sub_visit$julian_day <- yday(sub_visit$DATE)
+  
+  # Zero-fill
+  missing_dates <- sub_visit %>%
+    filter(!DATE %in% sub_count$DATE)
+  
+  missing_rows <- missing_dates %>%
+    mutate(COUNT = 0) %>%
+    select(julian_day, COUNT)
+  
+  all_counts <- bind_rows(
+    sub_count %>% select(julian_day, COUNT),
+    missing_rows
+  )
+  
+  # Structural zeros
+  anchor <- data.frame(
+    julian_day = c(1:30, 335:365),
+    COUNT = 0
+  )
+  
+  all_counts <- bind_rows(all_counts, anchor)
+  
+  # GAM
+  gam_model <- gam(COUNT ~ s(julian_day),
+                   data = all_counts,
+                   family = nb())
+  
+  julian_days <- 1:365
+  pred <- predict(gam_model,
+                  newdata = data.frame(julian_day = julian_days),
+                  type = "response")
+  
+  pheno <- data.frame(
+    Julian_Day = julian_days,
+    Predicted_Count = pred
+  )
+  
+  # Change points
+  cp_mean <- cpt.mean(pheno$Predicted_Count,
+                      method = "PELT",
+                      penalty = "Manual",
+                      pen.value = pen_mean)
+  
+  cp_var <- cpt.var(pheno$Predicted_Count,
+                    method = "PELT",
+                    penalty = "Manual",
+                    pen.value = pen_var)
+  
+  cps_mean <- cpts(cp_mean)
+  cps_var  <- cpts(cp_var)
+  
+  onset_mean  <- min(cps_mean)
+  offset_mean <- max(cps_mean)
+  onset_var   <- min(cps_var)
+  offset_var  <- max(cps_var)
+  
+  # Peak
+  peak_day   <- which.max(pheno$Predicted_Count)
+  peak_value <- max(pheno$Predicted_Count)
+  
+  # Plot object
+  plot_obj <- ggplot() +
+    geom_line(data = pheno,
+              aes(x = Julian_Day, y = Predicted_Count),
+              colour = "#1B9E77",
+              linewidth = 1.4) +
+    geom_point(data = all_counts,
+               aes(x = julian_day, y = COUNT),
+               colour = "grey40",
+               alpha = 0.6,
+               size = 2) +
+    geom_vline(xintercept = onset_mean,
+               colour = "#D95F02",
+               linetype = "dashed",
+               linewidth = 1.4) +
+    geom_vline(xintercept = offset_mean,
+               colour = "#D95F02",
+               linetype = "dashed",
+               linewidth = 1.4) +
+    
+    geom_vline(xintercept = onset_var,
+               colour = "#7570B3",
+               linetype = "dotted",
+               linewidth = 1.2
+    ) +
+    geom_vline(xintercept = offset_var,
+               colour = "#7570B3",
+               linetype = "dotted",
+               linewidth = 1.2) +
+    
+    geom_point(aes(x = peak_day, y = peak_value),
+               colour = "red",
+               size = 4) +
+    
+    geom_segment(aes(x = peak_day, xend = peak_day,
+                     y = 0, yend = peak_value),
+                 colour = "red",
+                 linewidth = 1.2
+    ) +
+    
+    labs(
+      title = paste0("Species: ", species_pick),
+      subtitle = paste0("Site: ", site_pick,
+                        "   |   Year: ", year_pick),
+      x = "Day of the year",
+      y = "Relative abundance"
+    ) +
+    
+    theme_classic(base_size = 14) +
+    theme(plot.title = element_text(face = "bold"))
+  
+  # Save if requested
+  if(save_plot){
+    
+    dir.create(here::here("output", "figures"), showWarnings = FALSE)
+    
+    filename <- paste0("pheno_",
+                       gsub(" ", "_", species_pick), "_",
+                       site_pick, "_",
+                       year_pick, ".png")
+    
+    ggsave(
+      filename = here::here("output", "figures", filename),
+      plot = plot_obj,
+      width = 8,
+      height = 5,
+      dpi = 300
+    )
+  }
+  
+  return(plot_obj)
+}
+
+
+plot_pheno_curve(
+  species_pick = "Boloria selene",
+  site_pick    = "FIBMS.246",
+  year_pick    = "2023",
+  m_count_filt = m_count_filt,
+  m_visit_filt = m_visit_filt,
+  save_plot    = TRUE
+)
+#---
+
+
 ##### Save the data #####
 head(phenology_estimates)
 str(phenology_estimates)
