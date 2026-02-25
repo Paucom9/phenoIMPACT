@@ -311,6 +311,19 @@ for (id in unique(m_count_filt$ID)) {
 #---
 
 
+##### Save the data #####
+head(phenology_estimates)
+str(phenology_estimates)
+
+# Save as CSV inside project
+write.csv(
+  phenology_estimates,
+  file = here("output", "pheno_estimates_allspp.csv"),
+  row.names = FALSE
+)
+#---
+
+
 #### Plot pheno-curve examples ####
 
 plot_pheno_curve <- function(species_pick,
@@ -485,19 +498,3 @@ plot_pheno_curve(
   save_plot    = TRUE
 )
 #---
-
-
-##### Save the data #####
-head(phenology_estimates)
-str(phenology_estimates)
-
-# Save as CSV inside project
-write.csv(
-  phenology_estimates,
-  file = here("output", "pheno_estimates_allspp.csv"),
-  row.names = FALSE
-)
-#---
-
-
-
