@@ -222,7 +222,9 @@ for (id in unique(m_count_filt$ID)) {
         
         tryCatch({
           
-          gam_model <- gam(COUNT ~ s(julian_day), data = all_counts, family = nb)
+          gam_model <- gam(COUNT ~ s(julian_day), 
+                           data = all_counts, 
+                           family = nb)
           
           onset_mean <- offset_mean <- flight_length_mean <- NA
           onset_var  <- offset_var  <- flight_length_var  <- NA
