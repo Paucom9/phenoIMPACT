@@ -41,19 +41,48 @@ str(pheno_trends_site)
 # ---
 
 #### Data exploration ####
-# --- Plot histograms of trends for each phenology variable
-# compute median per phenovar
-median_df <- pheno_trends_site |>
-  mutate(trend_decade = estimate * 10) |>
-  group_by(phenovar) |>
+
+#### Plot histograms of trends for each phenology variable ####
+# Define order
+vars_order <- c(
+  "ONSET_mean",
+  "ONSET_var",
+  "PEAKDAY",
+  "OFFSET_mean",
+  "OFFSET_var",
+  "FLIGHT_LENGTH_mean",
+  "FLIGHT_LENGTH_var"
+)
+
+pretty_labels <- c(
+  ONSET_mean = "Onset (mean)",
+  ONSET_var = "Onset (variance)",
+  PEAKDAY = "Peak day",
+  OFFSET_mean = "Offset (mean)",
+  OFFSET_var = "Offset (variance)",
+  FLIGHT_LENGTH_mean = "Flight length (mean)",
+  FLIGHT_LENGTH_var = "Flight length (variance)"
+)
+
+# Prepare data
+pheno_trends_plot <- pheno_trends_site |>
+  mutate(
+    trend_decade = estimate,
+    phenovar = factor(phenovar, levels = vars_order),
+    phenovar_label = factor(pretty_labels[phenovar],
+                            levels = pretty_labels[vars_order])
+  )
+
+# Compute medians
+median_df <- pheno_trends_plot |>
+  group_by(phenovar_label) |>
   summarise(
     med = median(trend_decade, na.rm = TRUE),
     .groups = "drop"
   )
 
-pheno_trends_site |>
-  mutate(trend_decade = estimate * 10) |>
-  ggplot(aes(x = trend_decade)) +
+# Plot
+distr_pheno_trends <-ggplot(pheno_trends_plot, aes(x = trend_decade)) +
   geom_histogram(bins = 30, fill = "grey70", color = "black") +
   geom_vline(xintercept = 0,
              linetype = "dashed",
@@ -63,27 +92,50 @@ pheno_trends_site |>
     aes(xintercept = med),
     linewidth = 0.8
   ) +
-  facet_wrap(~ phenovar, scales = "free") +
+  facet_wrap(~ phenovar_label, scales = "free") +
   theme_minimal() +
   labs(
-    x = "Trend (days per decade)",
-    y = "Number of sites"
+    x = "Trend (days per year)",
+    y = "Number of species-sites"
   )
 
-# --- Correlation between phenovars
+ggsave(
+  filename = here::here("output", "figures", "distribution_pheno_trends.png"),
+  plot = distr_pheno_trends,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
 
-cor_mat <- pheno_trends_site |>
+#### Correlation between phenovar trends ####
+
+# Wide format + convert to days per decade
+pheno_trends_wide <- pheno_trends_site |>
   select(SPECIES, SITE_ID, phenovar, estimate) |>
   pivot_wider(
     names_from = phenovar,
     values_from = estimate
   ) |>
-  select(-SPECIES, -SITE_ID) |>
+  mutate(across(all_of(vars_order), ~ .x * 10))
+
+# Correlation matrix
+cor_mat <- pheno_trends_wide |>
+  select(all_of(vars_order)) |>
   cor(use = "complete.obs")
+
+# Reorder + rename
+cor_mat <- cor_mat[vars_order, vars_order]
+colnames(cor_mat) <- pretty_labels[vars_order]
+rownames(cor_mat) <- pretty_labels[vars_order]
 
 cor_df <- melt(cor_mat)
 
-ggplot(cor_df, aes(Var1, Var2, fill = value)) +
+# Keep lower triangle only
+cor_df <- cor_df |>
+  filter(as.numeric(Var1) > as.numeric(Var2))
+
+# Plot
+correologram_pheno_trends<- ggplot(cor_df, aes(Var2, Var1, fill = value)) +
   geom_tile(color = "white") +
   geom_text(aes(label = sprintf("%.2f", value)), size = 3) +
   scale_fill_gradient2(
@@ -97,57 +149,14 @@ ggplot(cor_df, aes(Var1, Var2, fill = value)) +
     axis.title = element_blank()
   )
 
+ggsave(
+  filename = here::here("output", "figures", "correlogram_phenotrends.png"),
+  plot = correologram_pheno_trends,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
 
-pheno_trends_wide <- pheno_trends_site |>
-  select(SPECIES, SITE_ID, phenovar, estimate) |>
-  pivot_wider(
-    names_from = phenovar,
-    values_from = estimate
-  ) |>
-  mutate(across(starts_with("FLIGHT_LENGTH"), ~ .x * 10),
-         across(c("ONSET_mean", "OFFSET_mean", "PEAKDAY"), ~ .x * 10))
-
-
-plot_df <- pheno_trends_wide |>
-  select(
-    FLIGHT_LENGTH_mean,
-    ONSET_mean,
-    OFFSET_mean,
-    PEAKDAY
-  ) |>
-  pivot_longer(
-    cols = c(ONSET_mean, OFFSET_mean, PEAKDAY),
-    names_to = "phenovar",
-    values_to = "trend"
-  )
-
-# correlation per panel
-cor_df <- plot_df |>
-  group_by(phenovar) |>
-  summarise(
-    r = cor(trend, FLIGHT_LENGTH_mean, use = "complete.obs"),
-    .groups = "drop"
-  )
-
-ggplot(plot_df, aes(trend, FLIGHT_LENGTH_mean)) +
-  geom_point(alpha = 0.3, size = 0.8) +
-  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
-  geom_text(
-    data = cor_df,
-    aes(
-      x = -Inf, y = Inf,
-      label = paste0("r = ", round(r, 2))
-    ),
-    hjust = -0.1, vjust = 1.2,
-    inherit.aes = FALSE,
-    size = 4
-  ) +
-  facet_wrap(~ phenovar, scales = "free_x") +
-  theme_minimal() +
-  labs(
-    x = "Phenology trend (days per decade)",
-    y = "Flight length trend (days per decade)"
-  )
 
 
 #### Pheno trends vs. climatic regions ####
@@ -159,14 +168,30 @@ pheno_clim_df <- pheno_trends_site |>
 
 head(pheno_clim_df)
 
+# Count observations per phenovar and climatic region
+clim_counts <- pheno_clim_df %>%
+  group_by(genzname) %>%
+  summarise(
+    N_obs = n(),
+    N_species = n_distinct(SPECIES),
+    N_sites = n_distinct(SITE_ID),
+    .groups = "drop"
+  ) %>%
+  arrange(genzname)
+
+clim_counts
+
+# Model
+
 models_clim <- pheno_clim_df %>%
-  split(.$phenovar) %>%
+  split(.$phenovar) %>%           # fit one model per phenological metric
   map(~ lmer(
-    scale(estimate) ~ genzname +
-      (1 | SPECIES) +
-      (1 | SITE_ID),
+    scale(estimate) ~             # response: standardized phenological trend (slope)
+      genzname +                  # fixed effect: climatic region
+      (1 | SPECIES) +             # random intercept: species
+      (1 | SITE_ID),              # random intercept: site
     data = .x,
-    weights = 1 / (std.error^2),
+    weights = 1 / (std.error^2),  # Precision weights (inverse of trend variance)
     REML = FALSE
   ))
 
@@ -200,37 +225,13 @@ anova_results
 # Plot estimated marginal means for each phenovar
 
 # Estimated marginal means
-emm_all <- imap_dfr(
-  models_clim,
-  function(model, name) {
-    
-    emm <- emmeans(model, ~ genzname)
-    df  <- as.data.frame(emm)
-    
-    df$phenovar <- name
-    df
-  }
-)
+emm_all <- emm_all %>%
+  mutate(
+    phenovar = factor(phenovar, levels = vars_order),
+    phenovar_label = factor(pretty_names[phenovar],
+                            levels = pretty_names[vars_order])
+  )
 
-desired_order <- c(
-  "ONSET_mean",
-  "ONSET_var",
-  "PEAKDAY",
-  "OFFSET_mean",
-  "OFFSET_var",
-  "FLIGHT_LENGTH_mean",
-  "FLIGHT_LENGTH_var"
-)
-
-pretty_names <- c(
-  ONSET_mean = "Onset (mean)",
-  ONSET_var = "Onset (variance)",
-  PEAKDAY = "Peak day",
-  OFFSET_mean = "Offset (mean)",
-  OFFSET_var = "Offset (variance)",
-  FLIGHT_LENGTH_mean = "Flight length (mean)",
-  FLIGHT_LENGTH_var = "Flight length (variance)"
-)
 
 emm_all$genzname <- factor(
   emm_all$genzname,
@@ -250,11 +251,11 @@ emm_all$genz_letter <- factor(
   levels = c("E","F","G","H","J","K","L")
 )
 
-ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
+trends_by_rclim <- ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
   geom_point(size = 2.5) +
   geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = 0.15) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ phenovar, scales = "free_y") +
+  facet_wrap(~ phenovar_label, scales = "free_y")+
   labs(
     x = "Climatic region",
     y = "Estimated temporal trend (days/year)"
@@ -264,6 +265,15 @@ ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
     strip.text = element_text(face = "bold"),
     axis.text.x = element_text(face = "bold")
   )
+
+ggsave(
+  filename = here::here("output", "figures", "trends_by_rclims.png"),
+  plot = trends_by_rclim,
+  width = 9,
+  height = 5,
+  dpi = 300
+)
+
 
 #### Pheno trends vs. latitude ####
 
