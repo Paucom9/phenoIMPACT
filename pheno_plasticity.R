@@ -44,12 +44,12 @@ clim_vars <- mean_temperature |>
   arrange(transect_id, year) |>
   group_by(transect_id) |>
   mutate(
-    temp_between = mean(avg_temp, na.rm = TRUE),
-    temp_sd      = sd(avg_temp, na.rm = TRUE),
-    temp_within  = avg_temp - temp_between,
+    clim_background = mean(avg_temp, na.rm = TRUE),
+    clim_var      = sd(avg_temp, na.rm = TRUE),
+    clim_anomaly  = avg_temp - clim_background,
     n_years      = sum(!is.na(avg_temp)),
     
-    temp_acf1 = if (first(n_years) >= 10) {
+    clim_pred = if (first(n_years) >= 10) {
       cor(avg_temp[-n()], avg_temp[-1], use = "complete.obs")
     } else {
       NA_real_
@@ -57,10 +57,10 @@ clim_vars <- mean_temperature |>
   ) |>
   ungroup() |>
   mutate(
-    temp_between_sc = scale(temp_between)[,1],
-    temp_sd_sc      = scale(temp_sd)[,1],
-    temp_within_sc  = scale(temp_within)[,1],
-    temp_acf1_sc    = scale(temp_acf1)[,1]
+    clim_background_sc = scale(clim_background)[,1],
+    clim_var_sc      = scale(clim_var)[,1],
+    clim_anomaly_sc  = scale(clim_anomaly)[,1],
+    clim_pred_sc    = scale(clim_pred)[,1]
   )
 
 str(clim_vars)
@@ -69,41 +69,78 @@ str(clim_vars)
 
 clim_site <- clim_vars |>
   distinct(transect_id,
-           temp_between,
-           temp_sd,
-           temp_acf1,
-           temp_between_sc,
-           temp_sd_sc,
-           temp_acf1_sc)
+           clim_background,
+           clim_anomaly,
+           clim_var,
+           clim_pred,
+           clim_anomaly_sc,
+           clim_background_sc,
+           clim_var_sc,
+           clim_pred_sc)
 
-par(mfrow = c(1,3))
+png(
+  filename = here::here("output", "figures", "climate_histograms.png"),
+  width = 9,
+  height = 7,
+  units = "in",
+  res = 300
+)
 
-hist(clim_site$temp_between,
-     main = "Mean annual temp",
-     xlab = "temp_between")
+par(mfrow = c(2,2))
 
-hist(clim_site$temp_sd,
-     main = "Interannual SD",
-     xlab = "temp_sd")
+hist(clim_site$clim_anomaly,
+     main = "Year temperature anomaly (within-site)",
+     xlab = "Temp. anomaly")
 
-hist(clim_site$temp_acf1,
-     main = "Lag-1 autocorrelation",
-     xlab = "temp_acf1")
+hist(clim_site$clim_backgroud,
+     main = "Site mean annual temperature",
+     xlab = "Mean temp.")
+
+hist(clim_site$clim_var,
+     main = "Site interannual variability",
+     xlab = "Temp. SD")
+
+hist(clim_site$clim_pred,
+     main = "Site temperature predictability",
+     xlab = "Lag-1 autocorrelation")
+
+dev.off()
+
+
+
 # ---
 
-clim_site <- clim_vars |>
-  distinct(transect_id,
-           temp_between,
-           temp_sd,
-           temp_acf1)
+cor_mat <- clim_site |>
+  select(clim_anomaly,
+         clim_background,
+         clim_var,
+         clim_pred) |>
+  cor(use = "complete.obs")
 
-round(
-  cor(clim_site[, c("temp_between",
-                    "temp_sd",
-                    "temp_acf1")],
-      use = "complete.obs"),
-  2
+cor_df <- as.data.frame(as.table(cor_mat))
+
+# keep only lower triangle
+cor_df <- cor_df |>
+  filter(as.numeric(Var1) > as.numeric(Var2))
+
+corr_clim_vars <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = round(Freq, 2)), size = 4) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, limits = c(-1,1)) +
+  theme_minimal() +
+  labs(x = NULL, y = NULL, fill = "r") +
+  coord_equal()
+
+
+ggsave(
+  filename = here::here("output", "figures", "corr_climate_vars.png"),
+  plot = corr_clim_vars,
+  width = 5,
+  height = 5,
+  dpi = 300
 )
+
 # ---
 
 #### Merge datasets ####
@@ -150,67 +187,6 @@ df$sp_site <- interaction(df$SPECIES, df$SITE_ID, drop = TRUE)
 
 #### Model phenotypic plasticity: Do climate and latitude explain variation in plasticity? ####
 
-m_explain <- lmer(
-  ONSET_mean ~ 
-    
-  # ---
-  # Fixed effects
-  # ---
-    
-  # Plastic response to interannual temperature anomaly
-  temp_within_sc *
-    
-    # Long-term mean temperature (spatial climate)
-    temp_between_sc +
-    
-    # Plasticity moderated by interannual temperature variability
-    temp_within_sc * temp_sd_sc +
-    
-    # Plasticity moderated by climatic predictability (lag-1 autocorrelation)
-    temp_within_sc * temp_acf1_sc +
-    
-    # Plasticity moderated by latitude (photoperiod proxy)
-    temp_within_sc * latitude_sc +
-    
-    
-    # ---
-  # Random effects
-  # ---
-  
-  # Species-specific plasticity (reaction norm slope differs among species)
-  (0 + temp_within_sc | SPECIES) +
-    
-    # Species-specific baseline onset timing
-    (1 | SPECIES) +
-    
-    # Species-site specific plasticity 
-    # (local populations may differ in slope)
-    (0 + temp_within_sc | SPECIES:SITE_ID) +
-    
-    # Species-site specific baseline onset
-    # (local populations differ in mean phenology)
-    (1 | SPECIES:SITE_ID),
-  
-  
-  data = df,
-  REML = FALSE,
-  
-  # Increase optimizer iterations for complex random structure
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 1e6)
-  )
-)
-summary(m_explain)
-
-
-# Plasticity is reduced in warmer climates, with populations in colder regions showing stronger advances in onset during warm years.
-# Plasticity is reduced in more climatically variable (noisy) environments, suggesting that high interannual variability weakens temperature sensitivity.
-# Plasticity is stronger in more climatically predictable environments, indicating that reliable year-to-year temperature structure enhances phenological responsiveness.
-# Plasticity tends to be weaker at higher latitudes, consistent with a greater role of photoperiodic constraints limiting temperature-driven shifts (though this effect is relatively weak).
-
-#### Check consistency among phenovars ####
-
 df_long <- df |>
   pivot_longer(
     cols = c(
@@ -226,43 +202,45 @@ df_long <- df |>
     values_to = "pheno_value"
   )
 
-models_pheno <- df_long %>%
-  split(.$phenovar) %>%
+models_pheno_sensitivity <- df_long %>%
+  split(.$phenovar) %>%                           # fit a separate model for each phenology variable
   map(~ lmer(
     pheno_value ~ 
-      temp_within_sc * temp_between_sc +
-      temp_within_sc * temp_sd_sc +
-      temp_within_sc * temp_acf1_sc +
-      temp_within_sc * latitude_sc +
-      (0 + temp_within_sc | SPECIES) +
-      (0 + temp_within_sc | SPECIES:SITE_ID) +
-      (1 | SPECIES) +
-      (1 | SPECIES:SITE_ID),
+      clim_anomaly_sc * clim_background_sc +      # sensitivity interacting with background climate
+      clim_anomaly_sc * clim_var_sc +             # sensitivity interacting with climate variability
+      clim_anomaly_sc * clim_pred_sc +            # sensitivity interacting with climate predictability
+      clim_anomaly_sc * latitude_sc +             # sensitivity interacting with latitude
+      (1 | SPECIES) +                             # random intercept for species
+      (1 | SPECIES:SITE_ID) +                     # random intercept for population (species × site)
+      (0 + clim_anomaly_sc | SPECIES) +           # random slope of sensitivity across species
+      (0 + clim_anomaly_sc | SPECIES:SITE_ID),    # random slope of sensitivity across populations
     data = .x,  
     REML = FALSE,
-    control = lmerControl(
+    control = lmerControl(                        # robust optimizer for complex models
       optimizer = "bobyqa",
       optCtrl = list(maxfun = 1e6)
     )
   ))
 
+
 results <- map_df(
-  models_pheno,
+  models_pheno_sensitivity,
   ~ broom.mixed::tidy(.x, effects = "fixed"),
   .id = "phenovar"
 )
 
 print(results, n = Inf)
 
+
 #### Check multicollinearity ####
 
 m_vif <- lmer(
-  ONSET_mean ~ temp_within_sc * temp_between_sc + 
-    temp_within_sc * temp_sd_sc +
-    temp_within_sc * temp_acf1_sc + 
-    temp_within_sc * latitude_sc + 
-    (0 + temp_within | SPECIES) +
-    (0 + temp_within | SPECIES:SITE_ID) +
+  ONSET_mean ~ clim_anomaly_sc * clim_background_sc + 
+    clim_anomaly_sc * clim_var_sc +
+    clim_anomaly_sc * clim_pred_sc + 
+    clim_anomaly_sc * latitude_sc + 
+    (0 + clim_anomaly_sc | SPECIES) +
+    (0 + clim_anomaly_sc | SPECIES:SITE_ID) +
     (1 | SPECIES) + 
     (1 | SPECIES:SITE_ID), 
   data = df,
@@ -273,7 +251,6 @@ performance::check_collinearity(m_vif)
 
 
 #### Plot effects ####
-
 
 plot_df <- results %>%
   filter(effect == "fixed",
@@ -309,62 +286,78 @@ plot_df <- results %>%
     
     # ---- Rename predictors ----
     term = recode(term,
-                  temp_within_sc = "Temp. anomaly (plasticity)",
-                  temp_between_sc = "Mean temperature",
-                  temp_sd_sc = "Temp. variability",
-                  temp_acf1_sc = "Temp. predictability",
+                  clim_anomaly_sc = "Clim. Anomaly (sensitivity)",
+                  clim_background_sc = "Clim. Background",
+                  clim_var_sc = "Clim. Variability",
+                  clim_pred_sc = "Clim. Predictability",
                   latitude_sc = "Latitude",
-                  `temp_within_sc:temp_between_sc` = "Plasticity × Mean climate",
-                  `temp_within_sc:temp_sd_sc` = "Plasticity × Variability",
-                  `temp_within_sc:temp_acf1_sc` = "Plasticity × Predictability",
-                  `temp_within_sc:latitude_sc` = "Plasticity × Latitude"
+                  `clim_anomaly_sc:clim_background_sc` = "Sensitivity × Clim. Back.",
+                  `clim_anomaly_sc:clim_var_sc` = "Sensitivity × Clim. Var.",
+                  `clim_anomaly_sc:clim_pred_sc` = "Sensitivity × Clim. Pred.",
+                  `clim_anomaly_sc:latitude_sc` = "Sensitivity × Latitude"
     ),
     
     # ---- Order predictors (facet order) ----
     term = factor(
       term,
       levels = c(
-        "Temp. anomaly (plasticity)",
-        "Mean temperature",
-        "Temp. variability",
-        "Temp. predictability",
+        "Clim. Anomaly (sensitivity)",
+        "Clim. Background",
+        "Clim. Variability",
+        "Clim. Predictability",
         "Latitude",
-        "Plasticity × Mean climate",
-        "Plasticity × Variability",
-        "Plasticity × Predictability",
-        "Plasticity × Latitude"
+        "Sensitivity × Clim. Back.",
+        "Sensitivity × Clim. Var.",
+        "Sensitivity × Clim. Pred.",
+        "Sensitivity × Latitude"
       )
     )
   )
 
 
-ggplot(plot_df,
+interaction_effects <- ggplot(plot_df,
        aes(x = phenovar,
            y = estimate,
            ymin = lower,
            ymax = upper)) +
   geom_pointrange(size = 0.4) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ term, scales = "free_y") +
+  facet_wrap(~ term, scales = "free_x") +
   coord_flip() +
   theme_bw() +
   theme(
     strip.text = element_text(size = 9),
     axis.text.y = element_text(size = 8)
+  ) +
+  labs(
+    x = "Phenological metric",
+    y = "Effect size (estimate ± 95% CI)"
   )
 
+interaction_effects
+
+ggsave(
+  filename = here::here("output", "figures", "sensitivity_interaction_effects.png"),
+  plot = interaction_effects,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
 
 #### Plot interactions effects ####
 
-mods <- c("temp_between_sc",
-          "temp_sd_sc",
-          "temp_acf1_sc",
+mods <- c("clim_background_sc",
+          "clim_var_sc",
+          "clim_pred_sc",
           "latitude_sc")
 
 pretty_mods <- c(
-  temp_between_sc = "Mean clim.",
-  temp_sd_sc      = "Clim. var.",
-  temp_acf1_sc    = "Clim. pred.",
+  clim_background_sc = "Climate 
+back",
+  clim_var_sc      = "Climate 
+var.",
+  clim_pred_sc    = "Climate 
+pred.",
   latitude_sc     = "Latitude"
 )
 
@@ -383,7 +376,7 @@ make_pred_interaction <- function(model, name, moderator) {
   mod_seq <- moderator_ranges[[moderator]]
   
   grid <- expand.grid(
-    temp_within_sc = seq(-2, 3.5, length.out = 150),
+    clim_anomaly_sc = seq(-2, 3.5, length.out = 150),
     moderator_value = mod_seq
   )
   
@@ -396,10 +389,10 @@ make_pred_interaction <- function(model, name, moderator) {
   # prediction (only relevant terms)
   grid$pred <-
     beta["(Intercept)"] +
-    beta["temp_within_sc"] * grid$temp_within_sc +
+    beta["clim_anomaly_sc"] * grid$clim_anomaly_sc +
     beta[moderator] * grid[[moderator]] +
-    beta[paste0("temp_within_sc:", moderator)] *
-    grid$temp_within_sc * grid[[moderator]]
+    beta[paste0("clim_anomaly_sc:", moderator)] *
+    grid$clim_anomaly_sc * grid[[moderator]]
   
   grid$phenovar <- name
   grid$moderator_name <- moderator
@@ -410,12 +403,11 @@ make_pred_interaction <- function(model, name, moderator) {
 grid_all <- map_dfr(
   mods,
   function(mod) {
-    imap_dfr(models_pheno,
+    imap_dfr(models_pheno_sensitivity,
              ~ make_pred_interaction(.x, .y, mod))
   }
 )
 
-library(dplyr)
 
 grid_all <- grid_all %>%
   mutate(
@@ -447,12 +439,13 @@ plot_interaction <- function(data, moderator_label) {
   
   ggplot(
     dplyr::filter(data, moderator_name == moderator_label),
-    aes(x = temp_within_sc,
+    aes(x = clim_anomaly_sc,
         y = pred,
         group = moderator_value,
         colour = moderator_value)
   ) +
     geom_line(alpha = 0.6) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
     scale_colour_viridis_c(
       option = "D",
       name = pretty_mods[[moderator_label]]
@@ -461,12 +454,39 @@ plot_interaction <- function(data, moderator_label) {
     theme_bw() +
     labs(
       x = "Temperature anomaly",
-      y = "Phenology"
+      y = "Day of the year or number of days"
     )
 }
 
-plot_interaction(grid_all, "temp_sd_sc")
-plot_interaction(grid_all, "temp_between_sc")
-plot_interaction(grid_all, "temp_acf1_sc")
-plot_interaction(grid_all, "latitude_sc")
+clim_var_fig <- plot_interaction(grid_all, "clim_var_sc")
+clim_background_fig <- plot_interaction(grid_all, "clim_background_sc")
+clim_pred_fig <- plot_interaction(grid_all, "clim_pred_sc")
+clim_lat_fig <- plot_interaction(grid_all, "latitude_sc")
 
+ggsave(
+  filename = here::here("output", "figures", "clim_var_interactions.png"),
+  plot = clim_var_fig,
+  width = 6,
+  height = 5,
+  dpi = 300)
+
+ggsave(
+  filename = here::here("output", "figures", "clim_background_interactions.png"),
+  plot = clim_background_fig,
+  width = 6,
+  height = 5,
+  dpi = 300)
+
+ggsave(
+  filename = here::here("output", "figures", "clim_pred_interactions.png"),
+  plot = clim_pred_fig,
+  width = 6,
+  height = 5,
+  dpi = 300)
+
+ggsave(
+  filename = here::here("output", "figures", "clim_lat_interactions.png"),
+  plot = clim_lat_fig,
+  width = 6,
+  height = 5,
+  dpi = 300)
