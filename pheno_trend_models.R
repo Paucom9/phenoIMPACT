@@ -99,6 +99,8 @@ distr_pheno_trends <-ggplot(pheno_trends_plot, aes(x = trend_decade)) +
     y = "Number of species-sites"
   )
 
+distr_pheno_trends
+
 ggsave(
   filename = here::here("output", "figures", "distribution_pheno_trends.png"),
   plot = distr_pheno_trends,
@@ -148,6 +150,8 @@ correologram_pheno_trends<- ggplot(cor_df, aes(Var2, Var1, fill = value)) +
     axis.text.x = element_text(angle = 45, hjust = 1),
     axis.title = element_blank()
   )
+
+correologram_pheno_trends
 
 ggsave(
   filename = here::here("output", "figures", "correlogram_phenotrends.png"),
@@ -266,6 +270,8 @@ trends_by_rclim <- ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
     axis.text.x = element_text(face = "bold")
   )
 
+trends_by_rclim
+
 ggsave(
   filename = here::here("output", "figures", "trends_by_rclims.png"),
   plot = trends_by_rclim,
@@ -382,30 +388,44 @@ ggplot(pred_lon, aes(x = x, y = predicted)) +
   )
 
 
-# --- Gam spatial approach
+#### Gam spatial approach ####
 
-pheno_coord_df$SPECIES <- factor(pheno_coord_df$SPECIES)
-pheno_coord_df$SITE_ID <- factor(pheno_coord_df$SITE_ID)
+# ---- Prepare data ----
 
 pheno_coord_df <- pheno_coord_df %>%
   mutate(
-    lon_sc = scale(transect_lon),
-    lat_sc = scale(transect_lat)
+    SPECIES = factor(SPECIES),
+    SITE_ID = factor(SITE_ID)
   )
 
+# Global scaling (store attributes)
+lon_sc_obj <- scale(pheno_coord_df$transect_lon)
+lat_sc_obj <- scale(pheno_coord_df$transect_lat)
+
+pheno_coord_df$lon_sc <- as.numeric(lon_sc_obj)
+pheno_coord_df$lat_sc <- as.numeric(lat_sc_obj)
+
+lon_center <- attr(lon_sc_obj, "scaled:center")
+lon_scale  <- attr(lon_sc_obj, "scaled:scale")
+lat_center <- attr(lat_sc_obj, "scaled:center")
+lat_scale  <- attr(lat_sc_obj, "scaled:scale")
+
+# ---- Fit models ----
 
 models_gam <- pheno_coord_df %>%
-  split(.$phenovar) %>%
+  split(.$phenovar) %>%             # fit one model per phenological metric
   map(~ bam(
-    estimate ~ 
-      s(lon_sc, lat_sc, k = 50) +
-      s(SPECIES, bs = "re") +
-      s(SITE_ID, bs = "re"),
+    estimate ~                      # response: phenological trend (slope)
+      s(lon_sc, lat_sc, k = 50) +   # 2D smooth for spatial trend (longitude x latitude)
+      s(SPECIES, bs = "re") +       # random effect: species
+      s(SITE_ID, bs = "re"),        # random effect: site
     data = .x,
-    weights = 1 / (std.error^2),
+    weights = 1 / (std.error^2),    # Precision weights (inverse of trend variance)
     method = "fREML",
     discrete = TRUE
   ))
+
+# ---- Extract smooth table ----
 
 gam_results <- map_df(
   models_gam,
@@ -413,10 +433,8 @@ gam_results <- map_df(
   .id = "phenovar"
 )
 
-gam_results
+# ---- Europe map ----
 
-
-# Europe map
 europe_3035 <- ne_countries(
   continent = "Europe",
   scale = "medium",
@@ -424,22 +442,15 @@ europe_3035 <- ne_countries(
 ) %>%
   st_transform(3035)
 
-# Order
+# Desired order
 desired_order <- c(
-  "ONSET_mean",
-  "ONSET_var",
-  "PEAKDAY",
-  "OFFSET_mean",
-  "OFFSET_var",
-  "FLIGHT_LENGTH_mean",
-  "FLIGHT_LENGTH_var"
+  "ONSET_mean", "ONSET_var", "PEAKDAY",
+  "OFFSET_mean", "OFFSET_var",
+  "FLIGHT_LENGTH_mean", "FLIGHT_LENGTH_var"
 )
 
 models_gam <- models_gam[desired_order]
 
-names(models_gam)
-
-# Cleaner short labels
 pretty_names <- c(
   ONSET_mean = "Onset (mean)",
   ONSET_var = "Onset (var)",
@@ -450,12 +461,12 @@ pretty_names <- c(
   FLIGHT_LENGTH_var = "Flight length (var)"
 )
 
+# ---- Plot function ----
+
 plot_gam_surface <- function(pv) {
   
   mod <- models_gam[[pv]]
-  
-  dat <- pheno_coord_df %>%
-    filter(phenovar == pv)
+  dat <- pheno_coord_df %>% filter(phenovar == pv)
   
   # Prediction grid
   grid <- expand.grid(
@@ -467,18 +478,19 @@ plot_gam_surface <- function(pv) {
                        length.out = 80)
   )
   
-  # Scale as in model
-  grid$lon_sc <- (grid$transect_lon - mean(dat$transect_lon)) / sd(dat$transect_lon)
-  grid$lat_sc <- (grid$transect_lat - mean(dat$transect_lat)) / sd(dat$transect_lat)
+  # Use global scaling
+  grid$lon_sc <- (grid$transect_lon - lon_center) / lon_scale
+  grid$lat_sc <- (grid$transect_lat - lat_center) / lat_scale
   
-  # Dummy RE
+  # Dummy RE levels
   grid$SPECIES <- dat$SPECIES[1]
   grid$SITE_ID <- dat$SITE_ID[1]
   
-  # Spatial smooth only
-  grid$pred <- predict(mod, newdata = grid, type = "terms")[,1]
+  # Extract spatial smooth explicitly
+  terms_pred <- predict(mod, newdata = grid, type = "terms")
+  grid$pred  <- terms_pred[, "s(lon_sc,lat_sc)"]
   
-  # Convert to sf
+  # Convert sites to sf
   sites_sf <- st_as_sf(
     dat,
     coords = c("transect_lon", "transect_lat"),
@@ -486,29 +498,22 @@ plot_gam_surface <- function(pv) {
   )
   
   # Bounding box
-  expand_factor <- 300000
   bbox <- st_bbox(sites_sf)
+  expand_factor <- 3e5
   
   bbox_exp <- bbox
-  bbox_exp["xmin"] <- bbox["xmin"] - expand_factor
-  bbox_exp["xmax"] <- bbox["xmax"] + expand_factor
-  bbox_exp["ymin"] <- bbox["ymin"] - expand_factor
-  bbox_exp["ymax"] <- bbox["ymax"] + expand_factor
+  bbox_exp[c("xmin","xmax")] <- bbox[c("xmin","xmax")] + c(-expand_factor, expand_factor)
+  bbox_exp[c("ymin","ymax")] <- bbox[c("ymin","ymax")] + c(-expand_factor, expand_factor)
   
   europe_crop <- st_crop(europe_3035, bbox_exp)
   
-  grid_crop <- grid %>%
-    filter(
-      between(transect_lon, bbox_exp["xmin"], bbox_exp["xmax"]),
-      between(transect_lat, bbox_exp["ymin"], bbox_exp["ymax"])
-    )
-  
+  # Plot
   ggplot() +
     geom_sf(data = europe_crop,
             fill = "grey95",
             color = "grey70",
             linewidth = 0.2) +
-    geom_tile(data = grid_crop,
+    geom_tile(data = grid,
               aes(transect_lon, transect_lat, fill = pred),
               alpha = 0.9) +
     geom_sf(data = sites_sf,
@@ -531,11 +536,20 @@ plot_gam_surface <- function(pv) {
     labs(title = pretty_names[pv])
 }
 
-plots <- lapply(names(models_gam), plot_gam_surface)
+# ---- Generate all plots ----
 
-wrap_plots(plots, ncol = 3, guides = "collect") &
-  theme(legend.position = "right")
+plot_maps <- map(names(models_gam), plot_gam_surface)
 
+combined_map_fig <- wrap_plots(plot_maps, ncol = 3)
+
+
+ggsave(
+  filename = here::here("output", "figures", "pheno_trends_lat_lon.png"),
+  plot = combined_map_fig,
+  width = 7,
+  height = 9,
+  dpi = 300
+)
 
 #### Pheno trends vs. temperature ####
 temp_df  <- read.csv(here("output", "climate", "mean_temperature_site.csv"), sep = ",", dec = ".")
@@ -550,13 +564,14 @@ pheno_temp_df <- pheno_temp_df %>%
   mutate(mean_temp_sc = scale(mean_temp)[,1])
 
 models_temp <- pheno_temp_df %>%
-  split(.$phenovar) %>%
+  split(.$phenovar) %>%            # fit one model per phenological metric
   map(~ lmer(
-    estimate ~ mean_temp_sc +
-      (1 | SPECIES) +
-      (1 | SITE_ID),
+    estimate ~                     # response: phenological trend (slope)
+      mean_temp_sc +               # fixed effect: standardized mean temperature      
+      (1 | SPECIES) +              # random intercept: species
+      (1 | SITE_ID),               # random intercept: site
     data = .x,
-    weights = 1 / (std.error^2),
+    weights = 1 / (std.error^2),   # Precision weights (inverse of trend variance)
     REML = FALSE
   ))
 
@@ -653,17 +668,26 @@ pred_temp$phenovar <- factor(
   labels = pretty_names[desired_order]
 )
 
-ggplot(pred_temp, aes(x = x, y = predicted)) +
+pheno_trends_temp <- ggplot(pred_temp, aes(x = x, y = predicted)) +
   geom_line(linewidth = 1) +
   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   facet_wrap(~ phenovar, scales = "free_y") +
   theme_bw() +
   labs(
-    x = "Mean annual temperature (°C)",
+    x = "Standardized mean annual temperature",
     y = "Trend (days per year)",
-    title = "Temperature variation in phenological trends"
+    title = ""
   )
+
+ggsave(
+  filename = here::here("output", "figures", "pheno_trends_meantemp.png"),
+  plot = pheno_trends_temp,
+  width = 9,
+  height = 5,
+  dpi = 300
+)
+
 
 # Interpretation: FL decrease at warmer region because of stronger advance in the offset.
 # Are we capturing the actual offset or there is a methodological issue here???
