@@ -45,12 +45,16 @@ clim_vars <- mean_temperature |>
   group_by(transect_id) |>
   mutate(
     clim_background = mean(avg_temp, na.rm = TRUE),
-    clim_var      = sd(avg_temp, na.rm = TRUE),
-    clim_anomaly  = avg_temp - clim_background,
-    n_years      = sum(!is.na(avg_temp)),
+    clim_anomaly    = avg_temp - clim_background,
+    n_years         = sum(!is.na(avg_temp)),
     
-    clim_pred = if (first(n_years) >= 10) {
-      cor(avg_temp[-n()], avg_temp[-1], use = "complete.obs")
+    # Predictability based on variability (higher = more predictable)
+    clim_pred_sd = -sd(avg_temp, na.rm = TRUE),
+    
+    # Predictability based on temporal structure (lag-1 autocorrelation)
+    clim_pred_lag = if (first(n_years) >= 10) {
+      acf(avg_temp, plot = FALSE, lag.max = 1,
+          na.action = na.pass)$acf[2]
     } else {
       NA_real_
     }
@@ -58,9 +62,9 @@ clim_vars <- mean_temperature |>
   ungroup() |>
   mutate(
     clim_background_sc = scale(clim_background)[,1],
-    clim_var_sc      = scale(clim_var)[,1],
-    clim_anomaly_sc  = scale(clim_anomaly)[,1],
-    clim_pred_sc    = scale(clim_pred)[,1]
+    clim_anomaly_sc    = scale(clim_anomaly)[,1],
+    clim_pred_sd_sc    = scale(clim_pred_sd)[,1],
+    clim_pred_lag_sc   = scale(clim_pred_lag)[,1]
   )
 
 str(clim_vars)
@@ -71,12 +75,12 @@ clim_site <- clim_vars |>
   distinct(transect_id,
            clim_background,
            clim_anomaly,
-           clim_var,
-           clim_pred,
+           clim_pred_sd,
+           clim_pred_lag,
            clim_anomaly_sc,
            clim_background_sc,
-           clim_var_sc,
-           clim_pred_sc)
+           clim_pred_sd_sc,
+           clim_pred_lag_sc)
 
 png(
   filename = here::here("output", "figures", "climate_histograms.png"),
@@ -92,16 +96,16 @@ hist(clim_site$clim_anomaly,
      main = "Year temperature anomaly (within-site)",
      xlab = "Temp. anomaly")
 
-hist(clim_site$clim_backgroud,
+hist(clim_site$clim_background,
      main = "Site mean annual temperature",
      xlab = "Mean temp.")
 
-hist(clim_site$clim_var,
-     main = "Site interannual variability",
-     xlab = "Temp. SD")
+hist(clim_site$clim_pred_sd,
+     main = "Temperature predictability",
+     xlab = "Inverse Temp. SD")
 
-hist(clim_site$clim_pred,
-     main = "Site temperature predictability",
+hist(clim_site$clim_pred_lag,
+     main = "Temperature predictability",
      xlab = "Lag-1 autocorrelation")
 
 dev.off()
@@ -113,8 +117,8 @@ dev.off()
 cor_mat <- clim_site |>
   select(clim_anomaly,
          clim_background,
-         clim_var,
-         clim_pred) |>
+         clim_pred_sd,
+         clim_pred_lag) |>
   cor(use = "complete.obs")
 
 cor_df <- as.data.frame(as.table(cor_mat))
@@ -123,7 +127,7 @@ cor_df <- as.data.frame(as.table(cor_mat))
 cor_df <- cor_df |>
   filter(as.numeric(Var1) > as.numeric(Var2))
 
-corr_clim_vars <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
+corr_clim_pred_sds <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
   geom_tile() +
   geom_text(aes(label = round(Freq, 2)), size = 4) +
   scale_fill_gradient2(low = "blue", mid = "white", high = "red",
@@ -132,10 +136,11 @@ corr_clim_vars <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
   labs(x = NULL, y = NULL, fill = "r") +
   coord_equal()
 
+corr_clim_pred_sds
 
 ggsave(
   filename = here::here("output", "figures", "corr_climate_vars.png"),
-  plot = corr_clim_vars,
+  plot = corr_clim_pred_sds,
   width = 5,
   height = 5,
   dpi = 300
@@ -207,8 +212,8 @@ models_pheno_sensitivity <- df_long %>%
   map(~ lmer(
     pheno_value ~ 
       clim_anomaly_sc * clim_background_sc +      # sensitivity interacting with background climate
-      clim_anomaly_sc * clim_var_sc +             # sensitivity interacting with climate variability
-      clim_anomaly_sc * clim_pred_sc +            # sensitivity interacting with climate predictability
+      clim_anomaly_sc * clim_pred_sd_sc +         # sensitivity interacting with climate predictability (1/SD)
+      clim_anomaly_sc * clim_pred_lag_sc +        # sensitivity interacting with climate predictability (lag-1)
       clim_anomaly_sc * latitude_sc +             # sensitivity interacting with latitude
       (1 | SPECIES) +                             # random intercept for species
       (1 | SPECIES:SITE_ID) +                     # random intercept for population (species × site)
@@ -236,8 +241,8 @@ print(results, n = Inf)
 
 m_vif <- lmer(
   ONSET_mean ~ clim_anomaly_sc * clim_background_sc + 
-    clim_anomaly_sc * clim_var_sc +
-    clim_anomaly_sc * clim_pred_sc + 
+    clim_anomaly_sc * clim_pred_sd_sc +
+    clim_anomaly_sc * clim_pred_lag_sc + 
     clim_anomaly_sc * latitude_sc + 
     (0 + clim_anomaly_sc | SPECIES) +
     (0 + clim_anomaly_sc | SPECIES:SITE_ID) +
@@ -288,12 +293,12 @@ plot_df <- results %>%
     term = recode(term,
                   clim_anomaly_sc = "Clim. Anomaly (sensitivity)",
                   clim_background_sc = "Clim. Background",
-                  clim_var_sc = "Clim. Variability",
-                  clim_pred_sc = "Clim. Predictability",
+                  clim_pred_sd_sc = "Clim. Predictability (1/SD)",
+                  clim_pred_lag_sc = "Clim. Predictability (lag-1)",
                   latitude_sc = "Latitude",
                   `clim_anomaly_sc:clim_background_sc` = "Sensitivity × Clim. Back.",
-                  `clim_anomaly_sc:clim_var_sc` = "Sensitivity × Clim. Var.",
-                  `clim_anomaly_sc:clim_pred_sc` = "Sensitivity × Clim. Pred.",
+                  `clim_anomaly_sc:clim_pred_sd_sc` = "Sensitivity × Clim. 1/SD",
+                  `clim_anomaly_sc:clim_pred_lag_sc` = "Sensitivity × Clim. lag-1",
                   `clim_anomaly_sc:latitude_sc` = "Sensitivity × Latitude"
     ),
     
@@ -303,12 +308,12 @@ plot_df <- results %>%
       levels = c(
         "Clim. Anomaly (sensitivity)",
         "Clim. Background",
-        "Clim. Variability",
-        "Clim. Predictability",
+        "Clim. Predictability (1/SD)",
+        "Clim. Predictability (lag-1)",
         "Latitude",
         "Sensitivity × Clim. Back.",
-        "Sensitivity × Clim. Var.",
-        "Sensitivity × Clim. Pred.",
+        "Sensitivity × Clim. 1/SD",
+        "Sensitivity × Clim. lag-1",
         "Sensitivity × Latitude"
       )
     )
@@ -337,7 +342,7 @@ interaction_effects <- ggplot(plot_df,
 interaction_effects
 
 ggsave(
-  filename = here::here("output", "figures", "sensitivity_interaction_effects.png"),
+  filename = here::here("output", "figures", "sensitivity_interaction_effects2.png"),
   plot = interaction_effects,
   width = 8,
   height = 5,
@@ -347,18 +352,15 @@ ggsave(
 #### Plot interactions effects ####
 
 mods <- c("clim_background_sc",
-          "clim_var_sc",
-          "clim_pred_sc",
+          "clim_pred_sd_sc",
+          "clim_pred_lag_sc",
           "latitude_sc")
 
 pretty_mods <- c(
-  clim_background_sc = "Climate 
-back",
-  clim_var_sc      = "Climate 
-var.",
-  clim_pred_sc    = "Climate 
-pred.",
-  latitude_sc     = "Latitude"
+  clim_background_sc = "Climate\nbackground",
+  clim_pred_sd_sc    = "Climate\npredictability\n(SD)",
+  clim_pred_lag_sc   = "Climate\npredictability\n(lag-1)",
+  latitude_sc        = "Latitude"
 )
 
 moderator_ranges <- setNames(
@@ -458,14 +460,14 @@ plot_interaction <- function(data, moderator_label) {
     )
 }
 
-clim_var_fig <- plot_interaction(grid_all, "clim_var_sc")
+clim_pred_sd_fig <- plot_interaction(grid_all, "clim_pred_sd_sc")
 clim_background_fig <- plot_interaction(grid_all, "clim_background_sc")
-clim_pred_fig <- plot_interaction(grid_all, "clim_pred_sc")
+clim_pred_lag_fig <- plot_interaction(grid_all, "clim_pred_lag_sc")
 clim_lat_fig <- plot_interaction(grid_all, "latitude_sc")
 
 ggsave(
-  filename = here::here("output", "figures", "clim_var_interactions.png"),
-  plot = clim_var_fig,
+  filename = here::here("output", "figures", "clim_pred_sd_interactions.png"),
+  plot = clim_pred_sd_fig,
   width = 6,
   height = 5,
   dpi = 300)
@@ -478,8 +480,8 @@ ggsave(
   dpi = 300)
 
 ggsave(
-  filename = here::here("output", "figures", "clim_pred_interactions.png"),
-  plot = clim_pred_fig,
+  filename = here::here("output", "figures", "clim_pred_lag_interactions.png"),
+  plot = clim_pred_lag_fig,
   width = 6,
   height = 5,
   dpi = 300)
