@@ -31,9 +31,13 @@ here::here() # Check the current working directory
 phenology_estimates  <- read.csv(here::here("output", "pheno_estimates_allspp.csv"), sep = ",", dec = ".")
 mean_temperature <- read.csv(here::here("output", "climate", "mean_annual_temperature.csv"), sep = ",", dec = ".")
 ebms_transect_coord <- read.csv(here::here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
+species_traits <- read.csv(here::here("data", "species_trait_table.csv"), sep = ";", dec = ".")
+
 str(phenology_estimates)
 str(mean_temperature)
 str(ebms_transect_coord)
+str(species_traits)
+
 # ---
 
 #### Calculate within-temperature(1) and climate predictability(2) ####
@@ -192,6 +196,8 @@ df$sp_site <- interaction(df$SPECIES, df$SITE_ID, drop = TRUE)
 
 #### Model phenotypic plasticity: Do climate and latitude explain variation in plasticity? ####
 
+# 0. Prepara the dataset
+
 df_long <- df |>
   pivot_longer(
     cols = c(
@@ -205,151 +211,159 @@ df_long <- df |>
     ),
     names_to = "phenovar",
     values_to = "pheno_value"
-  )
-
-models_pheno_sensitivity <- df_long %>%
-  split(.$phenovar) %>%                           # fit a separate model for each phenology variable
-  map(~ lmer(
-    pheno_value ~ 
-      clim_anomaly_sc * clim_background_sc +      # sensitivity interacting with background climate
-      clim_anomaly_sc * clim_pred_sd_sc +         # sensitivity interacting with climate predictability (1/SD)
-      clim_anomaly_sc * clim_pred_lag_sc +        # sensitivity interacting with climate predictability (lag-1)
-      clim_anomaly_sc * latitude_sc +             # sensitivity interacting with latitude
-      (1 | SPECIES) +                             # random intercept for species
-      (1 | SPECIES:SITE_ID) +                     # random intercept for population (species × site)
-      (0 + clim_anomaly_sc | SPECIES) +           # random slope of sensitivity across species
-      (0 + clim_anomaly_sc | SPECIES:SITE_ID),    # random slope of sensitivity across populations
-    data = .x,  
-    REML = FALSE,
-    control = lmerControl(                        # robust optimizer for complex models
-      optimizer = "bobyqa",
-      optCtrl = list(maxfun = 1e6)
-    )
-  ))
-
-
-results <- map_df(
-  models_pheno_sensitivity,
-  ~ broom.mixed::tidy(.x, effects = "fixed"),
-  .id = "phenovar"
-)
-
-print(results, n = Inf)
-
-
-#### Check multicollinearity ####
-
-m_vif <- lmer(
-  ONSET_mean ~ clim_anomaly_sc * clim_background_sc + 
-    clim_anomaly_sc * clim_pred_sd_sc +
-    clim_anomaly_sc * clim_pred_lag_sc + 
-    clim_anomaly_sc * latitude_sc + 
-    (0 + clim_anomaly_sc | SPECIES) +
-    (0 + clim_anomaly_sc | SPECIES:SITE_ID) +
-    (1 | SPECIES) + 
-    (1 | SPECIES:SITE_ID), 
-  data = df,
-  REML = FALSE
-)
-
-performance::check_collinearity(m_vif)
-
-
-#### Plot effects ####
-
-plot_df <- results %>%
-  filter(effect == "fixed",
-         term != "(Intercept)") %>%
-  mutate(
-    lower = estimate - 1.96 * std.error,
-    upper = estimate + 1.96 * std.error,
-    
-    # ---- Rename phenological variables ----
-    phenovar = recode(phenovar,
-                      ONSET_mean = "On.(mean)",
-                      ONSET_var = "On.(var.)",
-                      PEAKDAY = "PD",
-                      OFFSET_mean = "Off.(mean)",
-                      OFFSET_var = "Off.(var.)",
-                      FLIGHT_LENGTH_mean = "FL(mean)",
-                      FLIGHT_LENGTH_var = "FL(var.)"
-    ),
-    
-    # ---- Order phenological variables ----
+  ) |>
+  dplyr::mutate(
     phenovar = factor(
       phenovar,
-      levels = rev(c(
-        "On.(mean)",
-        "On.(var.)",
-        "PD",
-        "Off.(mean)",
-        "Off.(var.)",
-        "FL(mean)",
-        "FL(var.)"
-      ))
-    ),
-    
-    # ---- Rename predictors ----
-    term = recode(term,
-                  clim_anomaly_sc = "Clim. Anomaly (sensitivity)",
-                  clim_background_sc = "Clim. Background",
-                  clim_pred_sd_sc = "Clim. Predictability (1/SD)",
-                  clim_pred_lag_sc = "Clim. Predictability (lag-1)",
-                  latitude_sc = "Latitude",
-                  `clim_anomaly_sc:clim_background_sc` = "Sensitivity × Clim. Back.",
-                  `clim_anomaly_sc:clim_pred_sd_sc` = "Sensitivity × Clim. 1/SD",
-                  `clim_anomaly_sc:clim_pred_lag_sc` = "Sensitivity × Clim. lag-1",
-                  `clim_anomaly_sc:latitude_sc` = "Sensitivity × Latitude"
-    ),
-    
-    # ---- Order predictors (facet order) ----
-    term = factor(
-      term,
       levels = c(
-        "Clim. Anomaly (sensitivity)",
-        "Clim. Background",
-        "Clim. Predictability (1/SD)",
-        "Clim. Predictability (lag-1)",
-        "Latitude",
-        "Sensitivity × Clim. Back.",
-        "Sensitivity × Clim. 1/SD",
-        "Sensitivity × Clim. lag-1",
-        "Sensitivity × Latitude"
+        "ONSET_mean",
+        "ONSET_var",
+        "PEAKDAY",
+        "OFFSET_mean",
+        "OFFSET_var",
+        "FLIGHT_LENGTH_mean",
+        "FLIGHT_LENGTH_var"
       )
     )
   )
 
 
-interaction_effects <- ggplot(plot_df,
-       aes(x = phenovar,
-           y = estimate,
-           ymin = lower,
-           ymax = upper)) +
-  geom_pointrange(size = 0.4) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ term, scales = "free_x") +
-  coord_flip() +
-  theme_bw() +
-  theme(
-    strip.text = element_text(size = 9),
-    axis.text.y = element_text(size = 8)
-  ) +
-  labs(
-    x = "Phenological metric",
-    y = "Effect size (estimate ± 95% CI)"
+# 1. Model function
+
+fit_pheno_models <- function(data) {
+  
+  models <- data %>%
+    split(.$phenovar) %>%
+    purrr::map(~ lme4::lmer(
+      pheno_value ~
+        clim_anomaly_sc * clim_background_sc +
+        clim_anomaly_sc * clim_pred_sd_sc +
+        clim_anomaly_sc * clim_pred_lag_sc +
+        clim_anomaly_sc * latitude_sc +
+        (1 | SPECIES) +
+        (1 | SPECIES:SITE_ID) +
+        (0 + clim_anomaly_sc | SPECIES) +
+        (0 + clim_anomaly_sc | SPECIES:SITE_ID),
+      data = .x,
+      REML = FALSE,
+      control = lmerControl(
+        optimizer = "bobyqa",
+        optCtrl = list(maxfun = 1e6)
+      )
+    ))
+  
+  results <- purrr::map_df(
+    models,
+    ~ broom.mixed::tidy(.x, effects = "fixed"),
+    .id = "phenovar"
   )
+  
+  list(models = models, results = results)
+}
 
-interaction_effects
 
-ggsave(
-  filename = here::here("output", "figures", "sensitivity_interaction_effects2.png"),
-  plot = interaction_effects,
-  width = 8,
-  height = 5,
-  dpi = 300
-)
+# 2. Forest plot function
 
-#### Plot interactions effects ####
+make_forest_plot <- function(results, label){
+  
+  plot_df <- results %>%
+    dplyr::filter(effect == "fixed",
+                  term != "(Intercept)") %>%
+    dplyr::mutate(
+      lower = estimate - 1.96 * std.error,
+      upper = estimate + 1.96 * std.error,
+      
+      # ---- Rename phenological variables ----
+      phenovar = dplyr::recode(
+        phenovar,
+        ONSET_mean = "On.(mean)",
+        ONSET_var = "On.(var.)",
+        PEAKDAY = "PD",
+        OFFSET_mean = "Off.(mean)",
+        OFFSET_var = "Off.(var.)",
+        FLIGHT_LENGTH_mean = "FL(mean)",
+        FLIGHT_LENGTH_var = "FL(var.)"
+      ),
+      
+      # ---- Order phenological variables ----
+      phenovar = factor(
+        phenovar,
+        levels = rev(c(
+          "On.(mean)",
+          "On.(var.)",
+          "PD",
+          "Off.(mean)",
+          "Off.(var.)",
+          "FL(mean)",
+          "FL(var.)"
+        ))
+      ),
+      
+      # ---- Rename predictors ----
+      term = dplyr::recode(
+        term,
+        clim_anomaly_sc = "Clim. Anomaly (sensitivity)",
+        clim_background_sc = "Clim. Background",
+        clim_pred_sd_sc = "Clim. Predictability (1/SD)",
+        clim_pred_lag_sc = "Clim. Predictability (lag-1)",
+        latitude_sc = "Latitude",
+        `clim_anomaly_sc:clim_background_sc` = "Sensitivity × Clim. Back.",
+        `clim_anomaly_sc:clim_pred_sd_sc` = "Sensitivity × Clim. 1/SD",
+        `clim_anomaly_sc:clim_pred_lag_sc` = "Sensitivity × Clim. lag-1",
+        `clim_anomaly_sc:latitude_sc` = "Sensitivity × Latitude"
+      ),
+      
+      # ---- Order predictors ----
+      term = factor(
+        term,
+        levels = c(
+          "Clim. Anomaly (sensitivity)",
+          "Clim. Background",
+          "Clim. Predictability (1/SD)",
+          "Clim. Predictability (lag-1)",
+          "Latitude",
+          "Sensitivity × Clim. Back.",
+          "Sensitivity × Clim. 1/SD",
+          "Sensitivity × Clim. lag-1",
+          "Sensitivity × Latitude"
+        )
+      )
+    )
+  
+  p <- ggplot(
+    plot_df,
+    aes(x = phenovar,
+        y = estimate,
+        ymin = lower,
+        ymax = upper)
+  ) +
+    geom_pointrange(size = 0.4) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~ term, scales = "free_x") +
+    coord_flip() +
+    theme_bw() +
+    theme(
+      strip.text = element_text(size = 9),
+      axis.text.y = element_text(size = 8)
+    ) +
+    labs(
+      x = "Phenological metric",
+      y = "Effect size (estimate ± 95% CI)"
+    )
+  
+  ggsave(
+    here::here("output", "figures",
+               paste0("forest_", label, ".png")),
+    p,
+    width = 8,
+    height = 5,
+    dpi = 300
+  )
+  
+  return(p)
+}
+
+# 3. Interaction settings
 
 mods <- c("clim_background_sc",
           "clim_pred_sd_sc",
@@ -372,9 +386,30 @@ moderator_ranges <- setNames(
   mods
 )
 
-make_pred_interaction <- function(model, name, moderator) {
+
+# 4. Prediction grid for interaction effects
+
+# Moderators to test
+mods <- c(
+  "clim_background_sc",
+  "clim_pred_sd_sc",
+  "clim_pred_lag_sc",
+  "latitude_sc"
+)
+
+# Labels for colour legend
+pretty_mods <- c(
+  clim_background_sc = "Climate\nbackground",
+  clim_pred_sd_sc    = "Climate\npredictability\n(SD)",
+  clim_pred_lag_sc   = "Climate\npredictability\n(lag-1)",
+  latitude_sc        = "Latitude"
+)
+
+
+# Create prediction grid for a given model and moderator
+make_pred_interaction <- function(model, name, moderator, moderator_ranges){
   
-  beta <- fixef(model)
+  beta <- lme4::fixef(model)
   mod_seq <- moderator_ranges[[moderator]]
   
   grid <- expand.grid(
@@ -382,13 +417,13 @@ make_pred_interaction <- function(model, name, moderator) {
     moderator_value = mod_seq
   )
   
-  # initialize all moderators at 0
+  # set all moderators to 0
   grid[mods] <- 0
   
   # assign focal moderator
   grid[[moderator]] <- grid$moderator_value
   
-  # prediction (only relevant terms)
+  # predicted response
   grid$pred <-
     beta["(Intercept)"] +
     beta["clim_anomaly_sc"] * grid$clim_anomaly_sc +
@@ -399,52 +434,21 @@ make_pred_interaction <- function(model, name, moderator) {
   grid$phenovar <- name
   grid$moderator_name <- moderator
   
-  grid
+  return(grid)
 }
 
-grid_all <- map_dfr(
-  mods,
-  function(mod) {
-    imap_dfr(models_pheno_sensitivity,
-             ~ make_pred_interaction(.x, .y, mod))
-  }
-)
+# 5. Interaction plots
 
-
-grid_all <- grid_all %>%
-  mutate(
-    phenovar = recode(
-      phenovar,
-      ONSET_mean = "Onset (mean)",
-      ONSET_var = "Onset (variance)",
-      PEAKDAY = "Peak day",
-      OFFSET_mean = "Offset (mean)",
-      OFFSET_var = "Offset (variance)",
-      FLIGHT_LENGTH_mean = "Flight length (mean)",
-      FLIGHT_LENGTH_var = "Flight length (variance)"
-    ),
-    phenovar = factor(
-      phenovar,
-      levels = c(
-        "Onset (mean)",
-        "Onset (variance)",
-        "Peak day",
-        "Offset (mean)",
-        "Offset (variance)",
-        "Flight length (mean)",
-        "Flight length (variance)"
-      )
-    )
-  )
-
-plot_interaction <- function(data, moderator_label) {
+plot_interaction <- function(data, moderator_label){
   
   ggplot(
     dplyr::filter(data, moderator_name == moderator_label),
-    aes(x = clim_anomaly_sc,
-        y = pred,
-        group = moderator_value,
-        colour = moderator_value)
+    aes(
+      x = clim_anomaly_sc,
+      y = pred,
+      group = moderator_value,
+      colour = moderator_value
+    )
   ) +
     geom_line(alpha = 0.6) +
     geom_vline(xintercept = 0, linetype = "dashed") +
@@ -460,35 +464,174 @@ plot_interaction <- function(data, moderator_label) {
     )
 }
 
-clim_pred_sd_fig <- plot_interaction(grid_all, "clim_pred_sd_sc")
-clim_background_fig <- plot_interaction(grid_all, "clim_background_sc")
-clim_pred_lag_fig <- plot_interaction(grid_all, "clim_pred_lag_sc")
-clim_lat_fig <- plot_interaction(grid_all, "latitude_sc")
+make_interaction_plots <- function(models, label, data){
+  
+  moderator_ranges <- setNames(
+    lapply(mods, function(v)
+      seq(
+        min(data[[v]], na.rm = TRUE),
+        max(data[[v]], na.rm = TRUE),
+        length.out = 150
+      )
+    ),
+    mods
+  )
+  
+  grid_all <- purrr::map_dfr(
+    mods,
+    function(mod){
+      purrr::imap_dfr(
+        models,
+        ~ make_pred_interaction(.x, .y, mod, moderator_ranges)
+      )
+    }
+  )
+  
+  grid_all <- grid_all %>%
+    dplyr::mutate(
+      phenovar = dplyr::recode(
+        phenovar,
+        ONSET_mean = "Onset (mean)",
+        ONSET_var = "Onset (variance)",
+        PEAKDAY = "Peak day",
+        OFFSET_mean = "Offset (mean)",
+        OFFSET_var = "Offset (variance)",
+        FLIGHT_LENGTH_mean = "Flight length (mean)",
+        FLIGHT_LENGTH_var = "Flight length (variance)"
+      ),
+      phenovar = factor(
+        phenovar,
+        levels = c(
+          "Onset (mean)",
+          "Onset (variance)",
+          "Peak day",
+          "Offset (mean)",
+          "Offset (variance)",
+          "Flight length (mean)",
+          "Flight length (variance)"
+        )
+      )
+    )
+  
+  plots <- list()
+  
+  for(mod in mods){
+    
+    p <- plot_interaction(grid_all, mod)
+    
+    file_path <- here::here(
+      "output","figures",
+      paste0(mod,"_",label,".png")
+    )
+    
+    print(file_path)
+    
+    ggsave(
+      filename = file_path,
+      plot = p,
+      width = 6,
+      height = 5,
+      dpi = 300
+    )
+    
+    plots[[mod]] <- p
+  }
+  
+  return(plots)
+}
 
-ggsave(
-  filename = here::here("output", "figures", "clim_pred_sd_interactions.png"),
-  plot = clim_pred_sd_fig,
-  width = 6,
-  height = 5,
-  dpi = 300)
+# 6. Master function
 
-ggsave(
-  filename = here::here("output", "figures", "clim_background_interactions.png"),
-  plot = clim_background_fig,
-  width = 6,
-  height = 5,
-  dpi = 300)
+run_analysis <- function(data, label){
+  
+  cat("Fitting models...\n")
+  fit <- fit_pheno_models(data)
+  
+  cat("Forest plot...\n")
+  forest <- make_forest_plot(
+    results = fit$results,
+    label = label
+  )
+  
+  cat("Interaction plots...\n")
+  interaction <- make_interaction_plots(
+    models = fit$models,
+    label = label,
+    data = data
+  )
+  
+  cat("Done\n")
+  
+  list(
+    models = fit$models,
+    results = fit$results,
+    forest_plot = forest,
+    interaction_plots = interaction
+  )
+}
 
-ggsave(
-  filename = here::here("output", "figures", "clim_pred_lag_interactions.png"),
-  plot = clim_pred_lag_fig,
-  width = 6,
-  height = 5,
-  dpi = 300)
+# 7. Add voltinism trait
 
-ggsave(
-  filename = here::here("output", "figures", "clim_lat_interactions.png"),
-  plot = clim_lat_fig,
-  width = 6,
-  height = 5,
-  dpi = 300)
+voltinism_spp <- species_traits %>%
+  dplyr::transmute(
+    Taxon = gsub("_", " ", Taxon),
+    voltinism = dplyr::if_else(Vol_max <= 1, "univoltine", "multivoltine")
+  )
+
+df_long <- df_long %>%
+  dplyr::left_join(voltinism_spp, by = c("SPECIES" = "Taxon"))
+
+
+# 8. Run analyses
+
+# Run all         (this is not working well)
+global <- run_analysis(df_long, "global")
+
+uni <- run_analysis(
+  dplyr::filter(df_long, voltinism == "univoltine"),
+  "univoltine"
+)
+
+multi <- run_analysis(
+  dplyr::filter(df_long, voltinism == "multivoltine"),
+  "multivoltine"
+)
+
+
+# Run separetely
+# GLOBAL
+fit_global <- fit_pheno_models(df_long)
+
+make_forest_plot(fit_global$results, "global")
+
+make_interaction_plots(
+  fit_global$models,
+  "global",
+  df_long
+)
+
+# UNIVOLTINE
+df_uni <- dplyr::filter(df_long, voltinism == "univoltine")
+
+fit_uni <- fit_pheno_models(df_uni)
+
+make_forest_plot(fit_uni$results, "univoltine")
+
+make_interaction_plots(
+  fit_uni$models,
+  "univoltine",
+  df_uni
+)
+
+# MULTIVOLTINE
+df_multi <- dplyr::filter(df_long, voltinism == "multivoltine")
+
+fit_multi <- fit_pheno_models(df_multi)
+
+make_forest_plot(fit_multi$results, "multivoltine")
+
+make_interaction_plots(
+  fit_multi$models,
+  "multivoltine",
+  df_multi
+)
