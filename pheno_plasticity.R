@@ -540,67 +540,26 @@ make_interaction_plots <- function(models, label, data){
   return(plots)
 }
 
-# 6. Master function
 
-run_analysis <- function(data, label){
-  
-  cat("Fitting models...\n")
-  fit <- fit_pheno_models(data)
-  
-  cat("Forest plot...\n")
-  forest <- make_forest_plot(
-    results = fit$results,
-    label = label
-  )
-  
-  cat("Interaction plots...\n")
-  interaction <- make_interaction_plots(
-    models = fit$models,
-    label = label,
-    data = data
-  )
-  
-  cat("Done\n")
-  
-  list(
-    models = fit$models,
-    results = fit$results,
-    forest_plot = forest,
-    interaction_plots = interaction
-  )
-}
-
-# 7. Add voltinism trait
+# 6. Add voltinism trait
 
 voltinism_spp <- species_traits %>%
   dplyr::transmute(
     Taxon = gsub("_", " ", Taxon),
-    voltinism = dplyr::if_else(Vol_max <= 1, "univoltine", "multivoltine")
+    univoltine = Vol_max <= 1.5,
+    multivoltine = Vol_max >= 2,
+    strict_multivoltine = Vol_min >= 2
   )
 
 df_long <- df_long %>%
-  dplyr::left_join(voltinism_spp, by = c("SPECIES" = "Taxon"))
+  mutate(SPECIES = as.character(SPECIES)) %>%
+  left_join(voltinism_spp, by = c("SPECIES" = "Taxon"))
 
+# 7. Run functions
 
-# 8. Run analyses
-
-# Run all         (this is not working well)
-global <- run_analysis(df_long, "global")
-
-uni <- run_analysis(
-  dplyr::filter(df_long, voltinism == "univoltine"),
-  "univoltine"
-)
-
-multi <- run_analysis(
-  dplyr::filter(df_long, voltinism == "multivoltine"),
-  "multivoltine"
-)
-
-
-# Run separetely
 # GLOBAL
 fit_global <- fit_pheno_models(df_long)
+str(df_long)
 
 make_forest_plot(fit_global$results, "global")
 
@@ -611,7 +570,11 @@ make_interaction_plots(
 )
 
 # UNIVOLTINE
-df_uni <- dplyr::filter(df_long, voltinism == "univoltine")
+df_uni <- df_long %>%
+  filter(univoltine)
+str(df_uni)
+length(unique(df_long$SPECIES))
+length(unique(df_long$SITE_ID))
 
 fit_uni <- fit_pheno_models(df_uni)
 
@@ -624,7 +587,11 @@ make_interaction_plots(
 )
 
 # MULTIVOLTINE
-df_multi <- dplyr::filter(df_long, voltinism == "multivoltine")
+df_multi <- df_long %>%
+  filter(multivoltine)
+str(df_multi)
+length(unique(df_multi$SPECIES))
+length(unique(df_multi$SITE_ID))
 
 fit_multi <- fit_pheno_models(df_multi)
 
@@ -635,3 +602,21 @@ make_interaction_plots(
   "multivoltine",
   df_multi
 )
+
+# Strict MULTIVOLTINE
+df_s_multi <- df_long %>%
+  filter(strict_multivoltine)
+str(df_s_multi)
+length(unique(df_s_multi$SPECIES))
+length(unique(df_s_multi$SITE_ID))
+
+fit_s_multi <- fit_pheno_models(df_s_multi)
+
+make_forest_plot(fit_s_multi$results, "strict_multivoltine")
+
+make_interaction_plots(
+  fit_s_multi$models,
+  "strict_multivoltine",
+  df_s_multi
+)
+
