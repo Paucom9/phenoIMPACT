@@ -33,6 +33,7 @@ library(rnaturalearth)
 library(MuMIn)
 library(tibble)
 library(lmerTest)
+library(extrafont)
 # ---
 
 #### Data Import and Preparation ####
@@ -281,133 +282,101 @@ table_clean <- table_final %>%
   ) %>%
   dplyr::arrange(phenovar, delta)  # order by support
 
+table_clean
   
-####
+#### Plots ####
 
-  
-  
-  
-  
-results_temp <- models_temp %>%
-  purrr::map_df(
-    ~ broom::tidy(.x, conf.int = TRUE),
-    .id = "phenovar"
-  )
+# Onset 
+mod_onset <- best_models[["ONSET_mean"]]$models[["m2"]]
 
-results_temp_clean <- results_temp %>%
-  dplyr::filter(
-    effect == "fixed",
-    term != "(Intercept)"
-  )
+pred <- ggpredict(mod_onset, terms = "clim_background_sc [-2:2]")
 
-print(results_temp_clean, n = Inf)
-
-anova_temp <- df %>%
-  split(.$phenovar) %>%
-  purrr::imap_dfr(function(df, name) {
-    
-    # Keep only complete cases for ALL variables used
-    df2 <- df %>%
-      dplyr::filter(
-        !is.na(estimate),
-        !is.na(clim_background_sc),
-        !is.na(clim_trend_sc),
-        !is.na(std.error),
-        !is.na(SPECIES),
-        !is.na(SITE_ID)
-      )
-    
-    # Full model: background + warming + interaction
-    m_full <- lmer(
-      estimate ~ clim_background_sc * clim_trend_sc +
-        (1 | SPECIES) +
-        (1 | SITE_ID),
-      data = df2,
-      weights = 1 / (std.error^2),
-      REML = FALSE
-    )
-    
-    # Null model: no climate effects
-    m_null <- lmer(
-      estimate ~ 
-        (1 | SPECIES) +
-        (1 | SITE_ID),
-      data = df2,
-      weights = 1 / (std.error^2),
-      REML = FALSE
-    )
-    
-    a <- anova(m_null, m_full)
-    
-    data.frame(
-      phenovar = name,
-      Chisq = a$Chisq[2],
-      df = a$Df[2],
-      p.value = a$`Pr(>Chisq)`[2]
-    )
-  })
-
-anova_temp
-
-# Plot effects
-
-desired_order <- c(
-  "ONSET_mean",
-  "ONSET_var",
-  "PEAKDAY",
-  "OFFSET_mean",
-  "OFFSET_var",
-  "FLIGHT_LENGTH_mean",
-  "FLIGHT_LENGTH_var"
-)
-
-pretty_names <- c(
-  ONSET_mean = "Onset (mean)",
-  ONSET_var = "Onset (variance)",
-  PEAKDAY = "Peak day",
-  OFFSET_mean = "Offset (mean)",
-  OFFSET_var = "Offset (variance)",
-  FLIGHT_LENGTH_mean = "Flight length (mean)",
-  FLIGHT_LENGTH_var = "Flight length (variance)"
-)
-
-pred_temp <- purrr::map_df(
-  models_temp,
-  ~ as.data.frame(ggeffects::ggpredict(.x, terms = "mean_temp_sc [all]")),
-  .id = "phenovar"
-)
-
-pred_temp$phenovar <- factor(
-  pred_temp$phenovar,
-  levels = desired_order
-)
-
-pred_temp$phenovar <- factor(
-  pred_temp$phenovar,
-  labels = pretty_names[desired_order]
-)
-
-pheno_trends_temp <- ggplot(pred_temp, aes(x = x, y = predicted)) +
-  geom_line(linewidth = 1) +
+ggplot(pred, aes(x, predicted)) +
+  geom_line(size = 1.2) +
   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ phenovar, scales = "free_y") +
-  theme_bw() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
   labs(
-    x = "Standardized mean annual temperature",
-    y = "Trend (days per year)",
-    title = ""
+    x = "Background climate",
+    y = "Onset trend"
+  ) +
+  theme_classic(base_family = "Garamond") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)
   )
 
-ggsave(
-  filename = here::here("output", "figures", "pheno_trends_meantemp.png"),
-  plot = pheno_trends_temp,
-  width = 9,
-  height = 5,
-  dpi = 300
+pred <- ggpredict(mod_onset, terms = "clim_trend_sc [-2:2]")
+
+ggplot(pred, aes(x, predicted)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    x = "Warming trend",
+    y = "Onset trend"
+  ) +
+  theme_classic(base_family = "Garamond") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)
+  )
+
+# Offset (mean)
+mod_offset <- best_models[["OFFSET_mean"]]$models[["m4"]]
+
+pred <- ggpredict(mod_offset, terms = "clim_background_sc [-2:2]")
+
+ggplot(pred, aes(x, predicted)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    x = "Background climate",
+    y = "Offset trend"
+  ) +
+  theme_classic(base_family = "Garamond") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)
+  )
+
+# Offset (var)
+mod_offset_var <- best_models[["OFFSET_var"]]$models[["m3"]]
+
+pred <- ggpredict(
+  mod_offset_var,
+  terms = c("clim_trend_sc [-2:2]", "voltinism")
 )
 
+ggplot(pred, aes(x, predicted, color = group)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group),
+              alpha = 0.2, color = NA) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    x = "Warming",
+    y = "Offset trend",
+    color = "Voltinism",
+    fill = "Voltinism"
+  ) +
+  theme_classic(base_family = "Garamond") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)
+  )
 
-# Interpretation: FL decrease at warmer region because of stronger advance in the offset.
-# Are we capturing the actual offset or there is a methodological issue here???
+# Flight length 
+
+mod_fl <- best_models[["FLIGHT_LENGTH_mean"]]$models[["m2"]]
+
+pred <- ggpredict(mod, terms = "clim_background_sc [-2:2]")
+
+ggplot(pred, aes(x, predicted)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    x = "Background climate",
+    y = "Flight length trend"
+  ) +
+  theme_classic(base_family = "Garamond") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8)
+  )
 
