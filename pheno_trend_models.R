@@ -37,143 +37,58 @@ library(rnaturalearth)
 here::here() # Check the current working directory
 # ---
 pheno_trends_site  <- read.csv(here("output", "pheno_temporal_trends_allspp.csv"), sep = ",", dec = ".")
+clim_vars <- read.csv(here::here("output", "climate", "climate_variables.csv"), sep = ",", dec = ".")
+ebms_clim_df   <- read.csv(here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
+ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
+
 str(pheno_trends_site)
-# ---
+str(clim_vars)
+str(ebms_clim_df)
+str(ebms_coord_df)
 
-#### Data exploration ####
 
-#### Plot histograms of trends for each phenology variable ####
-# Define order
-vars_order <- c(
-  "ONSET_mean",
-  "ONSET_var",
-  "PEAKDAY",
-  "OFFSET_mean",
-  "OFFSET_var",
-  "FLIGHT_LENGTH_mean",
-  "FLIGHT_LENGTH_var"
-)
-
-pretty_labels <- c(
-  ONSET_mean = "Onset (mean)",
-  ONSET_var = "Onset (variance)",
-  PEAKDAY = "Peak day",
-  OFFSET_mean = "Offset (mean)",
-  OFFSET_var = "Offset (variance)",
-  FLIGHT_LENGTH_mean = "Flight length (mean)",
-  FLIGHT_LENGTH_var = "Flight length (variance)"
-)
-
-# Prepare data
-pheno_trends_plot <- pheno_trends_site |>
-  mutate(
-    trend_decade = estimate,
-    phenovar = factor(phenovar, levels = vars_order),
-    phenovar_label = factor(pretty_labels[phenovar],
-                            levels = pretty_labels[vars_order])
-  )
-
-# Compute medians
-median_df <- pheno_trends_plot |>
-  group_by(phenovar_label) |>
-  summarise(
-    med = median(trend_decade, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-# Plot
-distr_pheno_trends <-ggplot(pheno_trends_plot, aes(x = trend_decade)) +
-  geom_histogram(bins = 30, fill = "grey70", color = "black") +
-  geom_vline(xintercept = 0,
-             linetype = "dashed",
-             color = "grey40") +
-  geom_vline(
-    data = median_df,
-    aes(xintercept = med),
-    linewidth = 0.8
-  ) +
-  facet_wrap(~ phenovar_label, scales = "free") +
-  theme_minimal() +
-  labs(
-    x = "Trend (days per year)",
-    y = "Number of species-sites"
-  )
-
-distr_pheno_trends
-
-ggsave(
-  filename = here::here("output", "figures", "distribution_pheno_trends.png"),
-  plot = distr_pheno_trends,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-#### Correlation between phenovar trends ####
-
-# Wide format + convert to days per decade
-pheno_trends_wide <- pheno_trends_site |>
-  select(SPECIES, SITE_ID, phenovar, estimate) |>
-  pivot_wider(
-    names_from = phenovar,
-    values_from = estimate
+# Merge datasets
+df <- pheno_trends_site |>
+  
+  # add climate (reduced to site level)
+  left_join(
+    clim_vars |>
+      distinct(
+        transect_id,
+        clim_background,
+        clim_var,
+        clim_pred_lag,
+        clim_trend,
+        clim_background_sc,
+        clim_var_sc,
+        clim_pred_lag_sc,
+        clim_trend_sc
+      ),
+    by = c("SITE_ID" = "transect_id")
   ) |>
-  mutate(across(all_of(vars_order), ~ .x * 10))
-
-# Correlation matrix
-cor_mat <- pheno_trends_wide |>
-  select(all_of(vars_order)) |>
-  cor(use = "complete.obs")
-
-# Reorder + rename
-cor_mat <- cor_mat[vars_order, vars_order]
-colnames(cor_mat) <- pretty_labels[vars_order]
-rownames(cor_mat) <- pretty_labels[vars_order]
-
-cor_df <- melt(cor_mat)
-
-# Keep lower triangle only
-cor_df <- cor_df |>
-  filter(as.numeric(Var1) > as.numeric(Var2))
-
-# Plot
-correologram_pheno_trends<- ggplot(cor_df, aes(Var2, Var1, fill = value)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = sprintf("%.2f", value)), size = 3) +
-  scale_fill_gradient2(
-    low = "blue", mid = "white", high = "red",
-    midpoint = 0, limits = c(-1, 1)
-  ) +
-  coord_fixed() +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.title = element_blank()
+  
+  # add climate region
+  left_join(
+    ebms_clim_df,
+    by = c("SITE_ID" = "transect_id")
+  ) |>
+  
+  # add coordinates
+  left_join(
+    ebms_coord_df,
+    by = c("SITE_ID" = "transect_id")
   )
 
-correologram_pheno_trends
-
-ggsave(
-  filename = here::here("output", "figures", "correlogram_phenotrends.png"),
-  plot = correologram_pheno_trends,
-  width = 9,
-  height = 6,
-  dpi = 300
-)
-
+str(df)
+# ---
 
 
 #### Pheno trends vs. climatic regions ####
-# Climate region data
-ebms_clim_df   <- read.csv(here("data", "ebms_transect_climate.csv"), sep = ",", dec = ".")
 
-pheno_clim_df <- pheno_trends_site |>
-  left_join(ebms_clim_df, by = c("SITE_ID" = "transect_id"))
-
-head(pheno_clim_df)
+head(df)
 
 # Count observations per phenovar and climatic region
-clim_counts <- pheno_clim_df %>%
+clim_counts <- df %>%
   filter(phenovar == "ONSET_mean") %>%
   group_by(genzname) %>%
   summarise(
@@ -188,17 +103,18 @@ clim_counts
 
 # Model
 
-models_clim <- pheno_clim_df %>%
-  split(.$phenovar) %>%           # fit one model per phenological metric
-  map(~ lmer(
-      estimate ~                  # response: phenological trend (slope)
-      genzname +                  # fixed effect: climatic region
-      (1 | SPECIES) +             # random intercept: species
-      (1 | SITE_ID),              # random intercept: site
-    data = .x,
-    weights = 1 / (std.error^2),  # Precision weights (inverse of trend variance)
-    REML = FALSE
-  ))
+models_clim <- df %>%
+  split(.$phenovar) %>%
+  map(function(d) {
+    lmer(
+      estimate ~ genzname * clim_trend_sc +
+        (1 | SPECIES) +
+        (1 | SITE_ID),
+      data = d,
+      weights = 1 / (std.error^2),
+      REML = FALSE
+    )
+  })
 
 results_fixed <- map_df(
   models_clim,
