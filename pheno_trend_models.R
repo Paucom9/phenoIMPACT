@@ -147,7 +147,10 @@ anova_results
 
 pred_clim <- purrr::map_df(
   models_clim,
-  ~ as.data.frame(ggeffects::ggpredict(.x, terms = "genzname")),
+  ~ as.data.frame(
+    ggeffects::ggpredict(.x, 
+                         terms = c("clim_trend_sc [-2:2]", "genzname"))
+  ),
   .id = "phenovar"
 )
 
@@ -174,19 +177,22 @@ pred_clim$phenovar <- factor(
 )
 
 pred_clim$genz_letter <- factor(
-  sub("\\..*", "", pred_clim$x),
+  sub("\\..*", "", pred_clim$group),
   levels = c("E","F","G","H","J","K","L")
 )
 
-pheno_trends_clim <- ggplot(pred_clim, aes(x = genz_letter, y = predicted)) +
-  geom_point(size = 2.5) +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
+pheno_trends_clim <- ggplot(pred_clim,
+                            aes(x = x, y = predicted, color = genz_letter)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = genz_letter),
+              alpha = 0.15, color = NA) +
   facet_wrap(~ phenovar, scales = "free_y") +
   theme_bw() +
   labs(
-    x = "Climatic region",
-    y = "Trend (days per year)"
+    x = "Warming trend (scaled)",
+    y = "Phenological trend",
+    color = "Region",
+    fill = "Region"
   )
 
 pheno_trends_clim
@@ -202,15 +208,7 @@ ggsave(
 
 #### Pheno trends vs. latitude ####
 
-ebms_coord_df  <- read.csv(here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
-
-pheno_coord_df <- pheno_trends_site |>
-  left_join(ebms_coord_df, by = c("SITE_ID" = "transect_id"))
-
-head(pheno_coord_df)
-str(pheno_coord_df)
-
-models_latlon <- pheno_coord_df %>%
+models_latlon <- df %>%
   split(.$phenovar) %>%
   map(~ lmer(
     estimate ~ 
@@ -471,56 +469,55 @@ ggsave(
 )
 
 #### Pheno trends vs. temperature ####
-temp_df  <- read.csv(here("output", "climate", "mean_temperature_site.csv"), sep = ",", dec = ".")
 
-pheno_temp_df <- pheno_trends_site |>
-  left_join(temp_df, by = c("SITE_ID" = "transect_id"))
+str(df)
 
-head(pheno_temp_df)
-str(pheno_temp_df)
-
-pheno_temp_df <- pheno_temp_df %>%
-  mutate(mean_temp_sc = scale(mean_temp)[,1])
-
-models_temp <- pheno_temp_df %>%
-  split(.$phenovar) %>%            # fit one model per phenological metric
-  map(~ lmer(
-    estimate ~                     # response: phenological trend (slope)
-      mean_temp_sc +               # fixed effect: standardized mean temperature      
-      (1 | SPECIES) +              # random intercept: species
-      (1 | SITE_ID),               # random intercept: site
-    data = .x,
-    weights = 1 / (std.error^2),   # Precision weights (inverse of trend variance)
-    REML = FALSE
-  ))
+models_temp <- df %>%
+  split(.$phenovar) %>%
+  purrr::map(function(d) {
+    lmer(
+      estimate ~ clim_background_sc * clim_trend_sc +   # <-- add +
+        (1 | SPECIES) +
+        (1 | SITE_ID),
+      data = d,
+      weights = 1 / (std.error^2),
+      REML = FALSE
+    )
+  })
 
 
 results_temp <- models_temp %>%
   purrr::map_df(
     ~ broom::tidy(.x, conf.int = TRUE),
     .id = "phenovar"
-  ) %>%
-  dplyr::filter(term == "mean_temp_sc")
+  )
 
-results_temp
+results_temp_clean <- results_temp %>%
+  dplyr::filter(
+    effect == "fixed",
+    term != "(Intercept)"
+  )
 
-anova_temp <- pheno_temp_df %>%
+print(results_temp_clean, n = Inf)
+
+anova_temp <- df %>%
   split(.$phenovar) %>%
-  imap_dfr(function(df, name) {
+  purrr::imap_dfr(function(df, name) {
     
-    # Keep only complete cases for ALL variables used in full model
+    # Keep only complete cases for ALL variables used
     df2 <- df %>%
       dplyr::filter(
         !is.na(estimate),
-        !is.na(mean_temp_sc),
+        !is.na(clim_background_sc),
+        !is.na(clim_trend_sc),
         !is.na(std.error),
         !is.na(SPECIES),
         !is.na(SITE_ID)
       )
     
-    # Now both models use EXACT same df2
+    # Full model: background + warming + interaction
     m_full <- lmer(
-      estimate ~ mean_temp_sc +
+      estimate ~ clim_background_sc * clim_trend_sc +
         (1 | SPECIES) +
         (1 | SITE_ID),
       data = df2,
@@ -528,6 +525,7 @@ anova_temp <- pheno_temp_df %>%
       REML = FALSE
     )
     
+    # Null model: no climate effects
     m_null <- lmer(
       estimate ~ 
         (1 | SPECIES) +
