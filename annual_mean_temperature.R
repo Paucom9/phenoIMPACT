@@ -169,23 +169,15 @@ cat("Processing complete for all countries.\n")
 head(combined_results)
 str(combined_results)
 
-# 1) Full annual dataset
+# Save mean annual temperature
 write.csv(
   combined_results,
   file.path(output_dir, "mean_annual_temperature.csv"),
   row.names = FALSE
 )
 
-# 2) Mean temperature per site across full time series
-mean_temp_site <- combined_results %>%
-  group_by(transect_id) %>%
-  summarise(mean_temp = mean(avg_temp, na.rm = TRUE))
 
-write.csv(
-  mean_temp_site,
-  file.path(output_dir, "mean_temperature_site.csv"),
-  row.names = FALSE
-)
+
 
 
 
