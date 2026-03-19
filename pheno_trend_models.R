@@ -32,6 +32,7 @@ library(sf)
 library(rnaturalearth)
 library(MuMIn)
 library(tibble)
+library(lmerTest)
 # ---
 
 #### Data Import and Preparation ####
@@ -109,142 +110,184 @@ str(df)
 
 #### Models ####
 
-str(df)
+# Fit a predefined set of hypothesis-driven models
+# H1: warming only
+# H2: warming × background climate
+# H3: warming × voltinism
+# H4: warming × background + warming × voltinism
 
-# Global model
-
-models_temp <- df %>%
-  split(.$phenovar) %>%
-  purrr::map(function(d) {
-    lmer(
-      estimate ~ clim_background_sc * voltinism +
-        clim_background_sc * clim_trend_sc +
-        clim_trend_sc * voltinism +
-        (1 | SPECIES) +
+model_set <- function(d) {
+  
+  # ---- remove missing values (required for lmer) ----
+  d <- d %>%
+    dplyr::filter(
+      !is.na(estimate),
+      !is.na(std.error),
+      !is.na(clim_background_sc),
+      !is.na(clim_trend_sc),
+      !is.na(voltinism)
+    )
+  
+  list(
+    
+    # H1: warming only
+    m1 = lmer(
+      estimate ~ clim_trend_sc +
+        (1 + clim_trend_sc || SPECIES) +  # random slope for warming
+        (1 | SITE_ID),                    # spatial grouping
+      data = d,
+      weights = 1 / (std.error^2),        # meta-analytic weighting
+      REML = FALSE,
+      control = lme4::lmerControl(optimizer = "bobyqa")
+    ),
+    
+    # H2: warming × background climate
+    m2 = lmer(
+      estimate ~ clim_trend_sc * clim_background_sc +
+        (1 + clim_trend_sc || SPECIES) +
         (1 | SITE_ID),
       data = d,
       weights = 1 / (std.error^2),
-      REML = FALSE
-    )
-  })
-
-# Model selection
-
-model_set <- function(d) {
-  list(
-    
-    m0 = lmer(
-      estimate ~ clim_background_sc + clim_trend_sc + voltinism +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
+      REML = FALSE,
+      control = lme4::lmerControl(optimizer = "bobyqa")
     ),
     
-    m1 = lmer(
-      estimate ~ clim_background_sc * voltinism +
-        clim_trend_sc +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
-    ),
-    
-    m2 = lmer(
-      estimate ~ clim_trend_sc * voltinism +
-        clim_background_sc +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
-    ),
-    
+    # H3: warming × voltinism
     m3 = lmer(
-      estimate ~ clim_background_sc * clim_trend_sc +
-        voltinism +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
+      estimate ~ clim_trend_sc * voltinism +
+        (1 + clim_trend_sc || SPECIES) +
+        (1 | SITE_ID),
+      data = d,
+      weights = 1 / (std.error^2),
+      REML = FALSE,
+      control = lme4::lmerControl(optimizer = "bobyqa")
     ),
     
+    # H4: full model (both moderators)
     m4 = lmer(
-      estimate ~ clim_background_sc * voltinism +
+      estimate ~ clim_trend_sc * clim_background_sc +
         clim_trend_sc * voltinism +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
-    ),
-    
-    m5 = lmer(
-      estimate ~ clim_background_sc * voltinism +
-        clim_background_sc * clim_trend_sc +
-        clim_trend_sc * voltinism +
-        (1 | SPECIES) + (1 | SITE_ID),
-      data = d, weights = 1 / (std.error^2), REML = FALSE
+        (1 + clim_trend_sc || SPECIES) +
+        (1 | SITE_ID),
+      data = d,
+      weights = 1 / (std.error^2),
+      REML = FALSE,
+      control = lme4::lmerControl(optimizer = "bobyqa")
     )
   )
 }
 
 
-model_selection <- df %>%
-  split(.$phenovar) %>%
-  purrr::map(function(d) {
-    
-    mods <- model_set(d)
-    
-    aic_tab <- MuMIn::model.sel(mods)
-    
-    aic_tab
-  })
+#### Model selection (ΔAIC ≤ 2 retained) ####
 
 best_models <- df %>%
   split(.$phenovar) %>%
   purrr::map(function(d) {
     
     mods <- model_set(d)
-    aic_tab <- MuMIn::model.sel(mods)
+    sel  <- MuMIn::model.sel(mods)
     
-    best_name <- rownames(aic_tab)[1]
-    mods[[best_name]]
+    sel_df <- as.data.frame(sel) %>%
+      tibble::rownames_to_column("model") %>%
+      dplyr::filter(delta <= 2)   # retain competing models
+    
+    list(
+      models = mods,
+      selection = sel_df
+    )
   })
 
-best_models
 
+#### Extract coefficients from selected models ####
 
-aic_tables <- df %>%
-  split(.$phenovar) %>%
-  purrr::imap_dfr(function(d, phen) {
+table_final <- purrr::imap_dfr(best_models, function(x, phen) {
+  
+  purrr::map_dfr(seq_len(nrow(x$selection)), function(i) {
     
-    mods <- model_set(d)
-    aic_tab <- MuMIn::model.sel(mods)
+    mod_name <- x$selection$model[i]
+    mod      <- x$models[[mod_name]]
     
-    aic_tab %>%
-      as.data.frame() %>%
-      rownames_to_column("model") %>%
-      mutate(phenovar = phen)
+    coefs <- broom.mixed::tidy(mod, effects = "fixed")
     
+    coefs %>%
+      dplyr::select(term, estimate, std.error, p.value) %>%
+      dplyr::mutate(
+        phenovar = phen,
+        model = mod_name,
+        delta = x$selection$delta[i],
+        weight = x$selection$weight[i]
+      ) %>%
+      tidyr::pivot_wider(
+        names_from = term,
+        values_from = c(estimate, std.error, p.value)
+      )
   })
+})
 
-aic_tables_clean <- aic_tables %>%
-  select(
+
+#### Rename predictors (clean table labels) ####
+
+table_final <- table_final %>%
+  dplyr::rename(
+    Warming = estimate_clim_trend_sc,
+    Background = estimate_clim_background_sc,
+    `Warming×Background` = `estimate_clim_trend_sc:clim_background_sc`,
+    Voltinism = estimate_voltinismmultivoltine,
+    `Warming×Voltinism` = `estimate_clim_trend_sc:voltinismmultivoltine`
+  )
+
+
+#### Significance stars ####
+
+stars <- function(p) {
+  dplyr::case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+
+
+#### Final clean table (publication-ready) ####
+
+table_clean <- table_final %>%
+  dplyr::transmute(
     phenovar,
     model,
-    df,
-    logLik,
-    AICc,
-    delta,
-    weight
+    delta = round(delta, 2),
+    weight = round(weight, 2),
+    
+    Warming = paste0(round(Warming, 3),
+                     stars(p.value_clim_trend_sc)),
+    
+    Background = paste0(round(Background, 3),
+                        stars(p.value_clim_background_sc)),
+    
+    `Warming×Background` = paste0(
+      round(`Warming×Background`, 3),
+      stars(`p.value_clim_trend_sc:clim_background_sc`)
+    ),
+    
+    Voltinism = paste0(
+      round(Voltinism, 3),
+      stars(p.value_voltinismmultivoltine)
+    ),
+    
+    `Warming×Voltinism` = paste0(
+      round(`Warming×Voltinism`, 3),
+      stars(`p.value_clim_trend_sc:voltinismmultivoltine`)
+    )
   ) %>%
-  arrange(phenovar, delta)
+  dplyr::arrange(phenovar, delta)  # order by support
 
-model_labels <- c(
-  m0 = "Additive",
-  m1 = "Background × Voltinism",
-  m2 = "Warming × Voltinism",
-  m3 = "Background × Warming",
-  m4 = "Voltinism interactions",
-  m5 = "Full model"
-)
-
-aic_tables_clean <- aic_tables_clean %>%
-  mutate(model = model_labels[model])
-
-# We considered models with ΔAIC < 2 as equally supported and focused on effects that were consistent across top-ranked models.
-
+  
 ####
 
+  
+  
+  
+  
 results_temp <- models_temp %>%
   purrr::map_df(
     ~ broom::tidy(.x, conf.int = TRUE),
