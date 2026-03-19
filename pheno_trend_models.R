@@ -174,6 +174,7 @@ head(pheno_clim_df)
 
 # Count observations per phenovar and climatic region
 clim_counts <- pheno_clim_df %>%
+  filter(phenovar == "ONSET_mean") %>%
   group_by(genzname) %>%
   summarise(
     N_obs = n(),
@@ -190,7 +191,7 @@ clim_counts
 models_clim <- pheno_clim_df %>%
   split(.$phenovar) %>%           # fit one model per phenological metric
   map(~ lmer(
-    scale(estimate) ~             # response: standardized phenological trend (slope)
+      estimate ~                  # response: phenological trend (slope)
       genzname +                  # fixed effect: climatic region
       (1 | SPECIES) +             # random intercept: species
       (1 | SITE_ID),              # random intercept: site
@@ -226,55 +227,57 @@ anova_results <- imap_dfr(
 
 anova_results
 
-# Plot estimated marginal means for each phenovar
+# Plot model predictions
 
-# Estimated marginal means
-emm_all <- emm_all %>%
-  mutate(
-    phenovar = factor(phenovar, levels = vars_order),
-    phenovar_label = factor(pretty_names[phenovar],
-                            levels = pretty_names[vars_order])
-  )
-
-
-emm_all$genzname <- factor(
-  emm_all$genzname,
-  levels = c(
-    "E. Cold and wet",
-    "F. Extremely cold and mesic",
-    "G. Cold and mesic",
-    "H. Cool temperate and dry",
-    "J. Cool temperate and moist",
-    "K. Warm temperate and mesic",
-    "L. Warm temperate and xeric"
-  )
+pred_clim <- purrr::map_df(
+  models_clim,
+  ~ as.data.frame(ggeffects::ggpredict(.x, terms = "genzname")),
+  .id = "phenovar"
 )
 
-emm_all$genz_letter <- factor(
-  sub("\\..*", "", emm_all$genzname),
+desired_order <- c(
+  "ONSET_mean", "ONSET_var", "PEAKDAY",
+  "OFFSET_mean", "OFFSET_var",
+  "FLIGHT_LENGTH_mean", "FLIGHT_LENGTH_var"
+)
+
+pretty_names <- c(
+  ONSET_mean = "Onset (mean)",
+  ONSET_var = "Onset (var)",
+  PEAKDAY = "Peak day",
+  OFFSET_mean = "Offset (mean)",
+  OFFSET_var = "Offset (var)",
+  FLIGHT_LENGTH_mean = "Flight length (mean)",
+  FLIGHT_LENGTH_var = "Flight length (var)"
+)
+
+pred_clim$phenovar <- factor(
+  pred_clim$phenovar,
+  levels = desired_order,
+  labels = pretty_names[desired_order]
+)
+
+pred_clim$genz_letter <- factor(
+  sub("\\..*", "", pred_clim$x),
   levels = c("E","F","G","H","J","K","L")
 )
 
-trends_by_rclim <- ggplot(emm_all, aes(x = genz_letter, y = emmean)) +
+pheno_trends_clim <- ggplot(pred_clim, aes(x = genz_letter, y = predicted)) +
   geom_point(size = 2.5) +
-  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = 0.15) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ phenovar_label, scales = "free_y")+
+  facet_wrap(~ phenovar, scales = "free_y") +
+  theme_bw() +
   labs(
     x = "Climatic region",
-    y = "Estimated temporal trend (days/year)"
-  ) +
-  theme_bw() +
-  theme(
-    strip.text = element_text(face = "bold"),
-    axis.text.x = element_text(face = "bold")
+    y = "Trend (days per year)"
   )
 
-trends_by_rclim
+pheno_trends_clim
 
 ggsave(
   filename = here::here("output", "figures", "trends_by_rclims.png"),
-  plot = trends_by_rclim,
+  plot = pheno_trends_clim,
   width = 9,
   height = 5,
   dpi = 300
@@ -294,7 +297,7 @@ str(pheno_coord_df)
 models_latlon <- pheno_coord_df %>%
   split(.$phenovar) %>%
   map(~ lmer(
-    scale(estimate) ~ 
+    estimate ~ 
       scale(transect_lat) +
       scale(transect_lon) +
       scale(N_years) +

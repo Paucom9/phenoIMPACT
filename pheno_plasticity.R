@@ -73,82 +73,6 @@ clim_vars <- mean_temperature |>
 
 str(clim_vars)
 
-#### Inspect climate variables ####
-
-clim_site <- clim_vars |>
-  distinct(transect_id,
-           clim_background,
-           clim_anomaly,
-           clim_pred_sd,
-           clim_pred_lag,
-           clim_anomaly_sc,
-           clim_background_sc,
-           clim_pred_sd_sc,
-           clim_pred_lag_sc)
-
-png(
-  filename = here::here("output", "figures", "climate_histograms.png"),
-  width = 9,
-  height = 7,
-  units = "in",
-  res = 300
-)
-
-par(mfrow = c(2,2))
-
-hist(clim_site$clim_anomaly,
-     main = "Year temperature anomaly (within-site)",
-     xlab = "Temp. anomaly")
-
-hist(clim_site$clim_background,
-     main = "Site mean annual temperature",
-     xlab = "Mean temp.")
-
-hist(clim_site$clim_pred_sd,
-     main = "Temperature predictability",
-     xlab = "Inverse Temp. SD")
-
-hist(clim_site$clim_pred_lag,
-     main = "Temperature predictability",
-     xlab = "Lag-1 autocorrelation")
-
-dev.off()
-
-
-
-# ---
-
-cor_mat <- clim_site |>
-  select(clim_anomaly,
-         clim_background,
-         clim_pred_sd,
-         clim_pred_lag) |>
-  cor(use = "complete.obs")
-
-cor_df <- as.data.frame(as.table(cor_mat))
-
-# keep only lower triangle
-cor_df <- cor_df |>
-  filter(as.numeric(Var1) > as.numeric(Var2))
-
-corr_clim_pred_sds <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
-  geom_tile() +
-  geom_text(aes(label = round(Freq, 2)), size = 4) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
-                       midpoint = 0, limits = c(-1,1)) +
-  theme_minimal() +
-  labs(x = NULL, y = NULL, fill = "r") +
-  coord_equal()
-
-corr_clim_pred_sds
-
-ggsave(
-  filename = here::here("output", "figures", "corr_climate_vars.png"),
-  plot = corr_clim_pred_sds,
-  width = 5,
-  height = 5,
-  dpi = 300
-)
 
 # ---
 
@@ -193,6 +117,108 @@ df <- df |>
   )
 
 df$sp_site <- interaction(df$SPECIES, df$SITE_ID, drop = TRUE)
+
+# Inspect climatic anomalies
+
+png(filename = here::here("output", "figures", "distribution_clim_anomalies.png"),
+ width = 800, height = 600)
+
+med <- median(df$clim_anomaly, na.rm = TRUE)
+
+hist(df$clim_anomaly,
+     main = "",
+     xlab = "Temperature anomaly (°C)",
+     col = "grey",
+     border = "white")
+
+# Line at zero
+abline(v = 0, col = "black", lwd = 2, lty = 2)
+
+# Line at median
+abline(v = med, col = "red", lwd = 2, lty = 2)
+
+text(med, par("usr")[4]*0.9,
+     labels = paste("Median =", round(med, 2)),
+     pos = 4,
+     col = "red")
+
+dev.off()
+
+#### Inspect predictor variables ####
+
+df_cor <- df |>
+  distinct(SITE_ID,
+           clim_background,
+           clim_pred_sd,
+           clim_pred_lag,
+           latitude)
+
+png(
+  filename = here::here("output", "figures", "climate_histograms.png"),
+  width = 9,
+  height = 7,
+  units = "in",
+  res = 300
+)
+
+par(mfrow = c(2,2))
+
+
+hist(df_cor$clim_background,
+     main = "Mean annual temperature",
+     xlab = "Mean temp.")
+
+hist(df_cor$clim_pred_sd,
+     main = "Temperature predictability (1/SD)",
+     xlab = "Inverse Temp. SD")
+
+hist(df_cor$clim_pred_lag,
+     main = "Temperature predictability (lag-1)",
+     xlab = "Lag-1 autocorrelation")
+
+hist(df_cor$latitude,
+     main = "Latitude",
+     xlab = "Degrees")
+
+dev.off()
+
+
+
+# ---
+
+cor_mat <- df_cor |>
+  select(clim_background,
+         clim_pred_sd,
+         clim_pred_lag,
+         latitude) |>
+  cor(use = "complete.obs")
+
+
+cor_df <- as.data.frame(as.table(cor_mat))
+
+# keep only lower triangle
+cor_df <- cor_df |>
+  filter(as.numeric(Var1) > as.numeric(Var2))
+
+corr_clim_pred_sds <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = round(Freq, 2)), size = 4) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, limits = c(-1,1)) +
+  theme_minimal() +
+  labs(x = NULL, y = NULL, fill = "r") +
+  coord_equal()
+
+corr_clim_pred_sds
+
+ggsave(
+  filename = here::here("output", "figures", "corr_site_vars.png"),
+  plot = corr_clim_pred_sds,
+  width = 5,
+  height = 5,
+  dpi = 300
+)
+
 
 #### Model phenotypic plasticity: Do climate and latitude explain variation in plasticity? ####
 
@@ -607,6 +633,7 @@ make_interaction_plots(
 df_s_multi <- df_long %>%
   filter(strict_multivoltine)
 str(df_s_multi)
+unique(df_s_multi$SPECIES)
 length(unique(df_s_multi$SPECIES))
 length(unique(df_s_multi$SITE_ID))
 
