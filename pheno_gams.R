@@ -139,20 +139,20 @@ find_peaks <- function(x,
                        ignore_threshold = 0,
                        span = 3,
                        strict = TRUE) {
-  range_x <- range(x, finite = TRUE)
-  min_x <- range_x[1]
-  max_x <- range_x[2]
-  x <- ifelse(!is.finite(x), min_x, x)
-  delta <- max_x - min_x
-  top_flag <- ignore_threshold > 0.0
-  scaled_threshold <- delta * abs(ignore_threshold)
+  
+  # Replace non-finite values
+  x[!is.finite(x)] <- min(x, na.rm = TRUE)
+  
+  # Detect local maxima
   pks <- splus2R::peaks(x = x, span = span, strict = strict)
-  if (abs(ignore_threshold) < 1e-5) return(pks)
-  if (top_flag) {
-    return(ifelse(x - min_x > scaled_threshold, pks, FALSE))
-  } else {
-    return(ifelse(max_x - x > scaled_threshold, pks, FALSE))
-  }
+  
+  # If no threshold → return raw peaks
+  if (ignore_threshold <= 0) return(pks)
+  
+  # Threshold relative to maximum (🔥 key change)
+  max_x <- max(x, na.rm = TRUE)
+  
+  return(ifelse(x > ignore_threshold * max_x, pks, FALSE))
 }
 
 
@@ -246,7 +246,7 @@ for (id in unique(m_count_filt$ID)) {
             
             peaks <- which(unlist(find_peaks(
               pheno$Predicted_Count,
-              ignore_threshold = 0.1,
+              ignore_threshold = 0.2,
               span = 11
             )))
             
