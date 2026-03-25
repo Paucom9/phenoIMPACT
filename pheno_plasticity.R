@@ -61,14 +61,13 @@ coord_site <- coords_wgs84 |>
   select(transect_id, latitude)
 
 clim_vars <- clim_vars |>
-  left_join(coord_site, by = "transect_id") |>
+  left_join(coord_site, by = c("SITE_ID" = "transect_id")) |>
   mutate(latitude_sc = scale(latitude)[,1])
 
 df <- phenology_estimates |>
   left_join(
     clim_vars,
-    by = c("SITE_ID" = "transect_id",
-           "YEAR"    = "year")
+    by = c("SITE_ID", "YEAR")
   )
 
 str(df)
@@ -87,9 +86,9 @@ df$sp_site <- interaction(df$SPECIES, df$SITE_ID, drop = TRUE)
 png(filename = here::here("output", "figures", "distribution_clim_anomalies.png"),
  width = 800, height = 600)
 
-med <- median(df$clim_anomaly, na.rm = TRUE)
+med <- median(df$clim_anomaly_temp_30, na.rm = TRUE)
 
-hist(df$clim_anomaly,
+hist(df$clim_anomaly_temp_30,
      main = "",
      xlab = "Temperature anomaly (°C)",
      col = "grey",
@@ -112,51 +111,78 @@ dev.off()
 
 df_cor <- df |>
   distinct(SITE_ID,
-           clim_background,
-           clim_pred_sd,
-           clim_pred_lag,
+           clim_background_temp_90,
+           clim_trend_temp_90,
+           clim_autocorr_temp_90,
+           clim_stability_temp_90,
+           clim_predictability_temp_90,
            latitude)
 
-png(
-  filename = here::here("output", "figures", "climate_histograms.png"),
-  width = 9,
-  height = 7,
-  units = "in",
-  res = 300
+# --- long format ---
+df_long <- df_cor |>
+  pivot_longer(
+    cols = -SITE_ID,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# --- labels bonics ---
+labels <- c(
+  clim_background_temp_90   = "Background temperature\n(°C)",
+  clim_trend_temp_90        = "Temperature trend\n(°C per decade)",
+  clim_autocorr_temp_90     = "Autocorrelation\n(lag-1)",
+  clim_stability_temp_90    = "Stability\n(-SD)",
+  clim_predictability_temp_90 = "Predictability\n(-Var residuals)",
+  latitude                  = "Latitude\n(degrees)"
 )
 
-par(mfrow = c(2,2))
+df_long$variable <- factor(df_long$variable,
+                           levels = names(labels),
+                           labels = labels)
 
+# --- plot ---
+p <- ggplot(df_long, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "grey70", color = "black") +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  theme_classic(base_size = 12) +
+  labs(x = NULL, y = "Frequency") +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6)
+  )
 
-hist(df_cor$clim_background,
-     main = "Mean annual temperature",
-     xlab = "Mean temp.")
-
-hist(df_cor$clim_pred_sd,
-     main = "Temperature predictability (1/SD)",
-     xlab = "Inverse Temp. SD")
-
-hist(df_cor$clim_pred_lag,
-     main = "Temperature predictability (lag-1)",
-     xlab = "Lag-1 autocorrelation")
-
-hist(df_cor$latitude,
-     main = "Latitude",
-     xlab = "Degrees")
-
-dev.off()
-
-
+# --- save ---
+ggsave(
+  filename = here::here("output", "figures", "climate_histograms.png"),
+  plot = p,
+  width = 9,
+  height = 7,
+  dpi = 300
+)
 
 # ---
 
 cor_mat <- df_cor |>
-  select(clim_background,
-         clim_pred_sd,
-         clim_pred_lag,
+  select(clim_background_temp_90,
+         clim_trend_temp_90,
+         clim_autocorr_temp_90,
+         clim_stability_temp_90,
+         clim_predictability_temp_90,
          latitude) |>
   cor(use = "complete.obs")
 
+
+new_names <- c(
+  "Background",
+  "Trend",
+  "Autocorr",
+  "Stability",
+  "Predictability",
+  "Latitude"
+)
+
+rownames(cor_mat) <- new_names
+colnames(cor_mat) <- new_names
 
 cor_df <- as.data.frame(as.table(cor_mat))
 
