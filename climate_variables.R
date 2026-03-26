@@ -26,7 +26,6 @@ ebms_transect_coord <- fread(here::here("data", "ebms_transect_coord.csv"))
 #### Identify relevant time windows based on mean onset ####
 
 # --- Ensure naming ---
-setnames(daily_temperature, tolower(names(daily_temperature)))
 daily_temperature[, SITE_ID := transect_id]
 
 # --- Keep only sites with phenology ---
@@ -37,22 +36,30 @@ daily_temperature <- daily_temperature[
 ]
 
 # --- Mean onset per site ---
-onset_site <- phenology_estimates %>%
-  group_by(SITE_ID) %>%
-  summarise(
-    onset_mean_site = mean(ONSET_mean, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
+onset_mean_sp <- phenology_estimates %>%
+  group_by(SPECIES, SITE_ID) %>%
+  summarise(onset_mean = mean(ONSET_mean, na.rm = TRUE),
+            .groups = "drop") %>%
   as.data.table()
 
-# --- Create dt (BASE DATASET) ---
-dt <- merge(daily_temperature, onset_site, by = "SITE_ID", all.x = FALSE)
+onset_mean_sp <- onset_mean_sp[
+  SITE_ID %in% daily_temperature$SITE_ID
+]
 
-# --- ADD COORDS (IMPORTANT: aquí, no abans) ---
+# --- Create dt (BASE DATASET) ---
+dt <- daily_temperature[
+  onset_mean_sp,
+  on = .(SITE_ID),
+  allow.cartesian = TRUE
+]
+
+dt[, rel_day := julian_day - onset_mean]
+
+dt <- dt[rel_day <= 0 & rel_day > -90]
+
+# --- ADD COORDS  ---
 dt <- merge(dt, coords_dt, by = "SITE_ID", all.x = TRUE)
 
-# --- Relative day to onset ---
-dt[, rel_day := julian_day - onset_mean_site]
 
 # --- Photoperiod ---
 daylength <- function(lat, doy) {
@@ -72,7 +79,7 @@ temp_windows <- dt[
     temp_60 = mean(temp[rel_day > -60], na.rm = TRUE),
     temp_90 = mean(temp, na.rm = TRUE)
   ),
-  by = .(SITE_ID, year)
+  by = .(SITE_ID, SPECIES, year)
 ]
 
 # --- Photoperiod windows ---
@@ -83,12 +90,13 @@ photo_windows <- dt[
     photo_60 = mean(photoperiod[rel_day > -60], na.rm = TRUE),
     photo_90 = mean(photoperiod, na.rm = TRUE)
   ),
-  by = .(SITE_ID, year)
+  by = .(SITE_ID, SPECIES, year)
 ]
 
-# --- Rename ---
 setnames(temp_windows, "year", "YEAR")
 setnames(photo_windows, "year", "YEAR")
+
+
 
 
 #### calculate temperature-based variables ####
@@ -106,17 +114,21 @@ dt_pred[, window :=
 
 dt_pred <- dt_pred[!is.na(window)]
 
-# --- climatology (mean per DOY within window) ---
+# --- climatology (species-specific) ---
 mean_profile <- dt_pred[
   , .(temp_mean = mean(temp, na.rm = TRUE)),
-  by = .(SITE_ID, window, julian_day)
+  by = .(SITE_ID, SPECIES, window, julian_day)
 ]
 
-# --- residuals ---
-dt_pred <- mean_profile[dt_pred, on = .(SITE_ID, window, julian_day)]
+# --- join + residuals ---
+dt_pred <- mean_profile[
+  dt_pred,
+  on = .(SITE_ID, SPECIES, window, julian_day)
+]
+
 dt_pred[, residual := temp - temp_mean]
 
-# --- predictability per site × window ---
+# --- predictability ---
 pred_window <- dt_pred[
   , {
     n_years <- uniqueN(year)
@@ -127,7 +139,7 @@ pred_window <- dt_pred[
       } else NA_real_
     )
   },
-  by = .(SITE_ID, window)
+  by = .(SITE_ID, SPECIES, window)
 ]
 
 #---
