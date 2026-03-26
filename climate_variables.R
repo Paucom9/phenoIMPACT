@@ -11,6 +11,7 @@
 library(dplyr)
 library(here)
 library(data.table)
+library(sf)
 
 #### Data Import and Preparation ####
 # ---
@@ -18,11 +19,11 @@ here::here() # Check the current working directory
 # ---
 phenology_estimates  <- fread(here::here("output", "pheno_estimates_allspp.csv"))
 daily_temperature <- fread(here::here("output", "climate", "daily_temperature.csv"))
+ebms_transect_coord <- fread(here::here("data", "ebms_transect_coord.csv"))
 
 # ---
 
-
-#### Calculate mean temperatures for relevant time windows based on mean onset ####
+#### Identify relevant time windows based on mean onset ####
 
 # --- Ensure naming ---
 setnames(daily_temperature, tolower(names(daily_temperature)))
@@ -44,13 +45,26 @@ onset_site <- phenology_estimates %>%
   ) %>%
   as.data.table()
 
-# --- Merge onset into daily data ---
+# --- Create dt (BASE DATASET) ---
 dt <- merge(daily_temperature, onset_site, by = "SITE_ID", all.x = FALSE)
 
-# --- Relative day to onset (within year) ---
+# --- ADD COORDS (IMPORTANT: aquí, no abans) ---
+dt <- merge(dt, coords_dt, by = "SITE_ID", all.x = TRUE)
+
+# --- Relative day to onset ---
 dt[, rel_day := julian_day - onset_mean_site]
 
-# --- Compute windows per SITE × YEAR ---
+# --- Photoperiod ---
+daylength <- function(lat, doy) {
+  lat_rad <- lat * pi / 180
+  decl <- 23.44 * pi / 180 * sin(2 * pi * (doy - 80) / 365)
+  ha <- acos(-tan(lat_rad) * tan(decl))
+  24 * ha / pi
+}
+
+dt[, photoperiod := daylength(LATITUDE, julian_day)]
+
+# --- Temperature windows ---
 temp_windows <- dt[
   rel_day <= 0 & rel_day > -90,
   .(
@@ -61,13 +75,25 @@ temp_windows <- dt[
   by = .(SITE_ID, year)
 ]
 
+# --- Photoperiod windows ---
+photo_windows <- dt[
+  rel_day <= 0 & rel_day > -90,
+  .(
+    photo_30 = mean(photoperiod[rel_day > -30], na.rm = TRUE),
+    photo_60 = mean(photoperiod[rel_day > -60], na.rm = TRUE),
+    photo_90 = mean(photoperiod, na.rm = TRUE)
+  ),
+  by = .(SITE_ID, year)
+]
+
 # --- Rename ---
 setnames(temp_windows, "year", "YEAR")
+setnames(photo_windows, "year", "YEAR")
 
 
 #### calculate temperature-based variables ####
 
-#### --- 1. Predictability (Cuchot-style, daily data) ----
+# Predictability
 
 dt_pred <- copy(dt)
 
@@ -106,7 +132,8 @@ pred_window <- dt_pred[
 
 #---
 
-#### --- 2. Annual temperature (windows already computed) ----
+
+# Climate metrics per site × window
 
 temp_long <- melt(
   temp_windows,
@@ -116,23 +143,28 @@ temp_long <- melt(
   value.name = "temp"
 )
 
-#---
-
-#### --- 3. Climate metrics per site × window ----
-
 clim_site_window <- temp_long[
   , {
     n_years <- sum(!is.na(temp))
     
     list(
       n_years = n_years,
+      
+      # --- Mean temperature ---
+      
       clim_background = mean(temp, na.rm = TRUE),
+      
+      # --- Trend temperature ---
       
       clim_trend = if (n_years >= 10)
         coef(lm(temp ~ YEAR))[["YEAR"]] * 10 else NA_real_,
       
+      # --- Stability ---
+      
       clim_stability = if (n_years >= 10)
         -sd(temp, na.rm = TRUE) else NA_real_,
+      
+      # --- Autocorrelation lag-1 ---
       
       clim_autocorr = if (n_years >= 10)
         acf(temp, plot = FALSE, lag.max = 1,
@@ -144,7 +176,7 @@ clim_site_window <- temp_long[
 
 #---
 
-#### --- 4. ADD predictability (the correct one) ----
+# ADD predictability ----
 
 clim_site_window <- pred_window[
   clim_site_window,
@@ -153,7 +185,7 @@ clim_site_window <- pred_window[
 
 #---
 
-#### --- 5. Merge back + anomalies ----
+# Merge back + anomalies ----
 
 temp_long <- clim_site_window[
   temp_long,
@@ -164,7 +196,7 @@ temp_long[, clim_anomaly := temp - clim_background]
 
 #---
 
-#### --- 6. Wide format ----
+# Wide format ----
 
 clim_vars <- dcast(
   temp_long,
@@ -177,9 +209,16 @@ clim_vars <- dcast(
                 "clim_predictability")
 )
 
+clim_vars <- merge(
+  clim_vars,
+  photo_windows,
+  by = c("SITE_ID", "YEAR"),
+  all.x = TRUE
+)
+
 #---
 
-#### --- 7. Scaling ----
+# Scaling ----
 
 cols_to_scale <- setdiff(names(clim_vars), c("SITE_ID", "YEAR"))
 
@@ -188,6 +227,8 @@ clim_vars[
     lapply(.SD, function(x) as.numeric(scale(x))),
   .SDcols = cols_to_scale
 ]
+
+
 #### Save ####
 
 write.csv(
