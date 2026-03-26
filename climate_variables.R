@@ -149,7 +149,7 @@ pred_window <- dt_pred[
 
 temp_long <- melt(
   temp_windows,
-  id.vars = c("SITE_ID", "YEAR"),
+  id.vars = c("SITE_ID", "SPECIES", "YEAR"),
   measure.vars = c("temp_30", "temp_60", "temp_90"),
   variable.name = "window",
   value.name = "temp"
@@ -157,33 +157,32 @@ temp_long <- melt(
 
 clim_site_window <- temp_long[
   , {
-    n_years <- sum(!is.na(temp))
     
-    list(
-      n_years = n_years,
+    valid <- !is.na(temp)
+    n_years <- uniqueN(YEAR[valid])
+    
+    if (n_years >= 10 && sum(valid) > 0) {
       
-      # --- Mean temperature ---
+      list(
+        clim_background = mean(temp, na.rm = TRUE),
+        clim_trend = coef(lm(temp ~ YEAR))[["YEAR"]] * 10,
+        clim_stability = -sd(temp, na.rm = TRUE),
+        clim_autocorr = acf(temp, plot = FALSE, lag.max = 1,
+                            na.action = na.pass)$acf[2]
+      )
       
-      clim_background = mean(temp, na.rm = TRUE),
+    } else {
       
-      # --- Trend temperature ---
-      
-      clim_trend = if (n_years >= 10)
-        coef(lm(temp ~ YEAR))[["YEAR"]] * 10 else NA_real_,
-      
-      # --- Stability ---
-      
-      clim_stability = if (n_years >= 10)
-        -sd(temp, na.rm = TRUE) else NA_real_,
-      
-      # --- Autocorrelation lag-1 ---
-      
-      clim_autocorr = if (n_years >= 10)
-        acf(temp, plot = FALSE, lag.max = 1,
-            na.action = na.pass)$acf[2] else NA_real_
-    )
+      list(
+        clim_background = NA_real_,
+        clim_trend = NA_real_,
+        clim_stability = NA_real_,
+        clim_autocorr = NA_real_
+      )
+    }
+    
   },
-  by = .(SITE_ID, window)
+  by = .(SITE_ID, SPECIES, window)
 ]
 
 #---
@@ -192,7 +191,7 @@ clim_site_window <- temp_long[
 
 clim_site_window <- pred_window[
   clim_site_window,
-  on = .(SITE_ID, window)
+  on = .(SITE_ID, SPECIES, window)
 ]
 
 #---
@@ -201,7 +200,7 @@ clim_site_window <- pred_window[
 
 temp_long <- clim_site_window[
   temp_long,
-  on = .(SITE_ID, window)
+  on = .(SITE_ID, SPECIES, window)
 ]
 
 temp_long[, clim_anomaly := temp - clim_background]
@@ -212,7 +211,7 @@ temp_long[, clim_anomaly := temp - clim_background]
 
 clim_vars <- dcast(
   temp_long,
-  SITE_ID + YEAR ~ window,
+  SITE_ID + SPECIES + YEAR ~ window,
   value.var = c("clim_anomaly",
                 "clim_background",
                 "clim_trend",
@@ -224,7 +223,7 @@ clim_vars <- dcast(
 clim_vars <- merge(
   clim_vars,
   photo_windows,
-  by = c("SITE_ID", "YEAR"),
+  by = c("SITE_ID", "SPECIES", "YEAR"),
   all.x = TRUE
 )
 
@@ -232,7 +231,7 @@ clim_vars <- merge(
 
 # Scaling ----
 
-cols_to_scale <- setdiff(names(clim_vars), c("SITE_ID", "YEAR"))
+cols_to_scale <- setdiff(names(clim_vars), c("SITE_ID", "SPECIES", "YEAR"))
 
 clim_vars[
   , (paste0(cols_to_scale, "_sc")) :=
