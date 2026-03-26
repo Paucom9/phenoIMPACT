@@ -22,6 +22,7 @@ library(sf)
 library(stringr)
 library(ggeffects)
 library(Matrix)
+library(lmerTest)
 # ---
 
 #### Data Import and Preparation ####
@@ -32,11 +33,6 @@ phenology_estimates  <- read.csv(here::here("output", "pheno_estimates_allspp.cs
 clim_vars <- read.csv(here::here("output", "climate", "climate_variables.csv"), sep = ",", dec = ".")
 ebms_transect_coord <- read.csv(here::here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
 species_traits <- read.csv(here::here("data", "species_trait_table.csv"), sep = ";", dec = ".")
-
-str(phenology_estimates)
-str(clim_vars)
-str(ebms_transect_coord)
-str(species_traits)
 
 # ---
 
@@ -83,29 +79,39 @@ df$sp_site <- interaction(df$SPECIES, df$SITE_ID, drop = TRUE)
 
 # Inspect climatic anomalies
 
-png(filename = here::here("output", "figures", "distribution_clim_anomalies.png"),
- width = 800, height = 600)
-
 med <- median(df$clim_anomaly_temp_30, na.rm = TRUE)
 
-hist(df$clim_anomaly_temp_30,
-     main = "",
-     xlab = "Temperature anomaly (°C)",
-     col = "grey",
-     border = "white")
+p <- ggplot(df, aes(x = clim_anomaly_temp_30)) +
+  geom_histogram(fill = "grey", color = "white", bins = 30) +
+  
+  # line at zero
+  geom_vline(xintercept = 0, linetype = "dashed", size = 1) +
+  
+  # line at median
+  geom_vline(xintercept = med, color = "red", linetype = "dashed", size = 1) +
+  
+  # annotation
+  annotate("text",
+           x = med,
+           y = Inf,
+           label = paste("Median =", round(med, 2)),
+           vjust = 2,
+           hjust = 0,
+           color = "red") +
+  
+  labs(
+    x = "Temperature anomaly (°C)",
+    y = "Count"
+  ) +
+  
+  theme_minimal()
 
-# Line at zero
-abline(v = 0, col = "black", lwd = 2, lty = 2)
-
-# Line at median
-abline(v = med, col = "red", lwd = 2, lty = 2)
-
-text(med, par("usr")[4]*0.9,
-     labels = paste("Median =", round(med, 2)),
-     pos = 4,
-     col = "red")
-
-dev.off()
+ggsave(
+  filename = here::here("output", "figures", "distribution_clim_anomalies.png"),
+  plot = p,
+  width = 8,
+  height = 6
+)
 
 #### Inspect predictor variables ####
 
@@ -116,6 +122,7 @@ df_cor <- df |>
            clim_autocorr_temp_90,
            clim_stability_temp_90,
            clim_predictability_temp_90,
+           photo_90,
            latitude)
 
 # --- long format ---
@@ -133,6 +140,7 @@ labels <- c(
   clim_autocorr_temp_90     = "Autocorrelation\n(lag-1)",
   clim_stability_temp_90    = "Stability\n(-SD)",
   clim_predictability_temp_90 = "Predictability\n(-Var residuals)",
+  photo_90 = "Photoperiod\n(daily hours)",
   latitude                  = "Latitude\n(degrees)"
 )
 
@@ -153,7 +161,7 @@ p <- ggplot(df_long, aes(x = value)) +
 
 # --- save ---
 ggsave(
-  filename = here::here("output", "figures", "climate_histograms.png"),
+  filename = here::here("output", "figures", "climate_histograms_26_3_26.png"),
   plot = p,
   width = 9,
   height = 7,
@@ -168,6 +176,7 @@ cor_mat <- df_cor |>
          clim_autocorr_temp_90,
          clim_stability_temp_90,
          clim_predictability_temp_90,
+         photo_90,
          latitude) |>
   cor(use = "complete.obs")
 
@@ -178,6 +187,7 @@ new_names <- c(
   "Autocorr",
   "Stability",
   "Predictability",
+  "Photoperiod",
   "Latitude"
 )
 
@@ -202,80 +212,235 @@ corr_clim_pred_sds <- ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
 corr_clim_pred_sds
 
 ggsave(
-  filename = here::here("output", "figures", "corr_site_vars.png"),
+  filename = here::here("output", "figures", "corr_site_vars_26_3_26.png"),
   plot = corr_clim_pred_sds,
-  width = 5,
+  width = 6,
   height = 5,
   dpi = 300
 )
 
 
-#### Model phenotypic plasticity: Do climate and latitude explain variation in plasticity? ####
+#### Models phenotypic plasticity ####
 
-# 0. Prepara the dataset
+#### Model selection ####
 
-df_long <- df |>
-  pivot_longer(
-    cols = c(
-      ONSET_mean,
-      ONSET_var,
-      PEAKDAY,
-      OFFSET_mean,
-      OFFSET_var,
-      FLIGHT_LENGTH_mean,
-      FLIGHT_LENGTH_var
-    ),
-    names_to = "phenovar",
-    values_to = "pheno_value"
-  ) |>
-  dplyr::mutate(
-    phenovar = factor(
-      phenovar,
-      levels = c(
-        "ONSET_mean",
-        "ONSET_var",
-        "PEAKDAY",
-        "OFFSET_mean",
-        "OFFSET_var",
-        "FLIGHT_LENGTH_mean",
-        "FLIGHT_LENGTH_var"
-      )
+model_set_plasticity <- function(d) {
+  
+  d <- d %>%
+    dplyr::filter(
+      !is.na(ONSET_mean),
+      !is.na(clim_anomaly_temp_90_sc),
+      !is.na(clim_background_temp_90_sc),
+      !is.na(clim_predictability_temp_90_sc),
+      !is.na(photo_90_sc)
     )
-  )
-
-
-# 1. Model function
-
-fit_pheno_models <- function(data) {
   
-  models <- data %>%
-    split(.$phenovar) %>%
-    purrr::map(~ lme4::lmer(
-      pheno_value ~
-        clim_anomaly_sc * clim_background_sc +
-        clim_anomaly_sc * clim_pred_sd_sc +
-        clim_anomaly_sc * clim_pred_lag_sc +
-        clim_anomaly_sc * latitude_sc +
-        (1 | SPECIES) +
-        (1 | SPECIES:SITE_ID) +
-        (0 + clim_anomaly_sc | SPECIES) +
-        (0 + clim_anomaly_sc | SPECIES:SITE_ID),
-      data = .x,
-      REML = FALSE,
-      control = lmerControl(
-        optimizer = "bobyqa",
-        optCtrl = list(maxfun = 1e6)
-      )
-    ))
-  
-  results <- purrr::map_df(
-    models,
-    ~ broom.mixed::tidy(.x, effects = "fixed"),
-    .id = "phenovar"
+  ctrl <- lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
   )
   
-  list(models = models, results = results)
+  f_base <- ONSET_mean ~ clim_anomaly_temp_90_sc +
+    (1 + clim_anomaly_temp_90_sc || SPECIES) +
+    (1 | SITE_ID)
+  
+  list(
+    
+    # H1
+    m1 = lmer(f_base, data = d, REML = FALSE, control = ctrl),
+    
+    # H2
+    m2 = lmer(update(f_base,
+                     . ~ . + clim_background_temp_90_sc +
+                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H3
+    m3 = lmer(update(f_base,
+                     . ~ . + clim_predictability_temp_90_sc +
+                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H4
+    m4 = lmer(update(f_base,
+                     . ~ . + photo_90_sc +
+                       clim_anomaly_temp_90_sc:photo_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H5
+    m5 = lmer(update(f_base,
+                     . ~ . +
+                       clim_background_temp_90_sc +
+                       clim_predictability_temp_90_sc +
+                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
+                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H6
+    m6 = lmer(update(f_base,
+                     . ~ . +
+                       clim_background_temp_90_sc +
+                       photo_90_sc +
+                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
+                       clim_anomaly_temp_90_sc:photo_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H7
+    m7 = lmer(update(f_base,
+                     . ~ . +
+                       clim_predictability_temp_90_sc +
+                       photo_90_sc +
+                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc +
+                       clim_anomaly_temp_90_sc:photo_90_sc),
+              data = d, REML = FALSE, control = ctrl),
+    
+    # H8
+    m8 = lmer(update(f_base,
+                     . ~ . +
+                       clim_background_temp_90_sc +
+                       clim_predictability_temp_90_sc +
+                       photo_90_sc +
+                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
+                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc +
+                       clim_anomaly_temp_90_sc:photo_90_sc),
+              data = d, REML = FALSE, control = ctrl)
+  )
 }
+
+mods <- model_set_plasticity(df)
+
+sel <- MuMIn::model.sel(mods)
+
+sel_df <- as.data.frame(sel) %>%
+  tibble::rownames_to_column("model") %>%
+  dplyr::filter(delta <= 2)
+
+sel_df
+
+sel_full <- as.data.frame(sel) %>%
+  tibble::rownames_to_column("model") %>%
+  dplyr::arrange(delta)
+
+# Check collinearity
+performance::check_collinearity(mods$m8)
+
+
+table_final <- purrr::map_dfr(seq_len(nrow(sel_full)), function(i) {
+  
+  mod_name <- sel_full$model[i]
+  mod      <- mods[[mod_name]]
+  
+  coefs <- broom.mixed::tidy(mod, effects = "fixed")
+  
+  if (!"p.value" %in% names(coefs)) {
+    coefs$p.value <- NA
+  }
+  
+  coefs %>%
+    dplyr::select(term, estimate, std.error, p.value) %>%
+    dplyr::mutate(
+      model = mod_name,
+      delta = sel_full$delta[i],
+      weight = sel_full$weight[i]
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = term,
+      values_from = c(estimate, std.error, p.value)
+    )
+})
+
+table_final <- table_final %>%
+  dplyr::rename(
+    Plasticity = estimate_clim_anomaly_temp_90_sc,
+    Background = estimate_clim_background_temp_90_sc,
+    Predictability = estimate_clim_predictability_temp_90_sc,
+    Photoperiod = estimate_photo_90_sc,
+    
+    `Plasticity×Background` =
+      `estimate_clim_anomaly_temp_90_sc:clim_background_temp_90_sc`,
+    
+    `Plasticity×Predictability` =
+      `estimate_clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc`,
+    
+    `Plasticity×Photoperiod` =
+      `estimate_clim_anomaly_temp_90_sc:photo_90_sc`
+  )
+
+
+table_final %>%
+  dplyr::select(model, delta, weight,
+                Plasticity, Background, Predictability, Photoperiod,
+                `Plasticity×Background`,
+                `Plasticity×Predictability`,
+                `Plasticity×Photoperiod`)
+
+
+
+stars <- function(p) {
+  dplyr::case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+
+table_clean <- table_final %>%
+  dplyr::transmute(
+    model,
+    delta = round(delta, 1),
+    
+    weight = dplyr::case_when(
+      weight == 0 ~ "<1e-50",
+      weight < 1e-3 ~ formatC(weight, format = "e", digits = 2),
+      TRUE ~ formatC(weight, format = "f", digits = 3)
+    ),
+    
+    Plasticity = paste0(
+      round(Plasticity, 2),
+      stars(p.value_clim_anomaly_temp_90_sc)
+    ),
+    
+    Background = paste0(
+      round(Background, 2),
+      stars(p.value_clim_background_temp_90_sc)
+    ),
+    
+    Predictability = paste0(
+      round(Predictability, 2),
+      stars(p.value_clim_predictability_temp_90_sc)
+    ),
+    
+    Photoperiod = paste0(
+      round(Photoperiod, 2),
+      stars(p.value_photo_90_sc)
+    ),
+    
+    `Plasticity×Background` = paste0(
+      round(`Plasticity×Background`, 2),
+      stars(`p.value_clim_anomaly_temp_90_sc:clim_background_temp_90_sc`)
+    ),
+    
+    `Plasticity×Predictability` = paste0(
+      round(`Plasticity×Predictability`, 2),
+      stars(`p.value_clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc`)
+    ),
+    
+    `Plasticity×Photoperiod` = paste0(
+      round(`Plasticity×Photoperiod`, 2),
+      stars(`p.value_clim_anomaly_temp_90_sc:photo_90_sc`)
+    )
+  ) %>%
+  dplyr::arrange(delta) %>%
+  dplyr::mutate(
+    across(-c(model, delta, weight),
+           ~ ifelse(. %in% c("NA", NA), "—", .))
+  )
+
+table_clean
+
+
+
 
 
 # 2. Forest plot function
