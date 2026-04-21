@@ -225,7 +225,337 @@ ggsave(
 )
 
 
-#### Models: testing non-linear response of phenological sensitivity to temperature experienced pre-onset ####
+#### Models: testing non-linear response of phenological sensitivity to LATITUDE ####
+
+mod_lin <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * latitude +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+mod_quad <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * (latitude + I(latitude^2)) +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+anova(mod_lin, mod_quad)
+
+# test and plot non-linearity of latitude effect on phenological sensitivity to temperature anomalies
+anomaly_vars <- c(
+  "clim_anomaly_temp_30",
+  "clim_anomaly_temp_60",
+  "clim_anomaly_temp_90"
+)
+
+bg <- seq(-2.5, 2.5, length.out = 200)
+
+get_slope_df <- function(anom) {
+  
+  # model
+  form <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * (latitude + I(latitude^2)) + ",
+           "(1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  mod <- lmer(
+    form, data = df, REML = FALSE,
+    control = lmerControl(optimizer = "bobyqa",
+                          optCtrl = list(maxfun = 2e6))
+  )
+  
+  b <- fixef(mod)
+  V <- vcov(mod)
+  
+  coef_names <- c(
+    anom,
+    paste0(anom, ":latitude"),
+    paste0(anom, ":I(latitude^2)")
+  )
+  
+  get_slope <- function(x) {
+    
+    g <- c(1, x, x^2)
+    
+    slope <- as.numeric(b[coef_names] %*% g)
+    
+    se <- sqrt(as.numeric(t(g) %*% V[coef_names, coef_names] %*% g))
+    
+    c(slope = slope, se = se)
+  }
+  
+  out <- t(sapply(bg, get_slope))
+  
+  data.frame(
+    latitude = bg,
+    slope = out[, "slope"],
+    lower = out[, "slope"] - 1.96 * out[, "se"],
+    upper = out[, "slope"] + 1.96 * out[, "se"],
+    anomaly = anom
+  )
+}
+
+# run all models
+df_all <- map_dfr(anomaly_vars, get_slope_df)
+
+
+df_all$anomaly <- recode(df_all$anomaly,
+                         clim_anomaly_temp_30 = "30 days",
+                         clim_anomaly_temp_60 = "60 days",
+                         clim_anomaly_temp_90 = "90 days"
+)
+
+
+ggplot(df_all, aes(latitude, slope, color = anomaly, fill = anomaly)) +
+  
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(size = 1.3) +
+  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  
+  scale_color_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  scale_fill_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  
+  theme_classic(base_size = 14, base_family = "Garamond") +
+  
+  labs(
+    x = "Latitude",
+    y = "Phenological sensitivity\n(slope of onset vs temperature anomaly)",
+    color = "Time window",
+    fill = "Time window"
+  )
+
+
+#### Models: testing non-linear response of phenological sensitivity to BACKGROUND CLIMATE ####
+
+mod_lin <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * clim_background_annual_fixed_fixed +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+mod_quad <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * (clim_background_annual_fixed_fixed + I(clim_background_annual_fixed_fixed^2)) +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+anova(mod_lin, mod_quad)
+
+# test and plot non-linearity of clim_background_annual_fixed_fixed effect on phenological sensitivity to temperature anomalies
+anomaly_vars <- c(
+  "clim_anomaly_temp_30",
+  "clim_anomaly_temp_60",
+  "clim_anomaly_temp_90"
+)
+
+bg <- seq(-2.5, 2.5, length.out = 200)
+
+get_slope_df <- function(anom) {
+  
+  # model
+  form <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * (clim_background_annual_fixed_fixed + I(clim_background_annual_fixed_fixed^2)) + ",
+           "(1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  mod <- lmer(
+    form, data = df, REML = FALSE,
+    control = lmerControl(optimizer = "bobyqa",
+                          optCtrl = list(maxfun = 2e6))
+  )
+  
+  b <- fixef(mod)
+  V <- vcov(mod)
+  
+  coef_names <- c(
+    anom,
+    paste0(anom, ":clim_background_annual_fixed_fixed"),
+    paste0(anom, ":I(clim_background_annual_fixed_fixed^2)")
+  )
+  
+  get_slope <- function(x) {
+    
+    g <- c(1, x, x^2)
+    
+    slope <- as.numeric(b[coef_names] %*% g)
+    
+    se <- sqrt(as.numeric(t(g) %*% V[coef_names, coef_names] %*% g))
+    
+    c(slope = slope, se = se)
+  }
+  
+  out <- t(sapply(bg, get_slope))
+  
+  data.frame(
+    clim_background_annual_fixed_fixed = bg,
+    slope = out[, "slope"],
+    lower = out[, "slope"] - 1.96 * out[, "se"],
+    upper = out[, "slope"] + 1.96 * out[, "se"],
+    anomaly = anom
+  )
+}
+
+# run all models
+df_all <- map_dfr(anomaly_vars, get_slope_df)
+
+
+df_all$anomaly <- recode(df_all$anomaly,
+                         clim_anomaly_temp_30 = "30 days",
+                         clim_anomaly_temp_60 = "60 days",
+                         clim_anomaly_temp_90 = "90 days"
+)
+
+
+ggplot(df_all, aes(clim_background_annual_fixed_fixed, slope, color = anomaly, fill = anomaly)) +
+  
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(size = 1.3) +
+  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  
+  scale_color_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  scale_fill_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  
+  theme_classic(base_size = 14, base_family = "Garamond") +
+  
+  labs(
+    x = "Site mean annual temperature",
+    y = "Phenological sensitivity\n(slope of onset vs temperature anomaly)",
+    color = "Time window",
+    fill = "Time window"
+  )
+
+
+
+
+
+#### Models: testing non-linear response of phenological sensitivity to CLIMATE PREDICTABILITY ####
+
+mod_lin <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * clim_predictability_annual_fixed_fixed +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+mod_quad <- lmer(
+  ONSET_mean ~ clim_anomaly_temp_90 * (clim_predictability_annual_fixed_fixed + I(clim_predictability_annual_fixed_fixed^2)) +
+    (1 | SITE_ID) + (1 + clim_anomaly_temp_90 | SPECIES),
+  data = df, REML = FALSE,
+  control = lmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e6)
+  )
+)
+
+anova(mod_lin, mod_quad)
+
+# test and plot non-linearity of clim_predictability_annual_fixed_fixed effect on phenological sensitivity to temperature anomalies
+anomaly_vars <- c(
+  "clim_anomaly_temp_30",
+  "clim_anomaly_temp_60",
+  "clim_anomaly_temp_90"
+)
+
+bg <- seq(-2.5, 2.5, length.out = 200)
+
+get_slope_df <- function(anom) {
+  
+  # model
+  form <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * (clim_predictability_annual_fixed_fixed + I(clim_predictability_annual_fixed_fixed^2)) + ",
+           "(1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  mod <- lmer(
+    form, data = df, REML = FALSE,
+    control = lmerControl(optimizer = "bobyqa",
+                          optCtrl = list(maxfun = 2e6))
+  )
+  
+  b <- fixef(mod)
+  V <- vcov(mod)
+  
+  coef_names <- c(
+    anom,
+    paste0(anom, ":clim_predictability_annual_fixed_fixed"),
+    paste0(anom, ":I(clim_predictability_annual_fixed_fixed^2)")
+  )
+  
+  get_slope <- function(x) {
+    
+    g <- c(1, x, x^2)
+    
+    slope <- as.numeric(b[coef_names] %*% g)
+    
+    se <- sqrt(as.numeric(t(g) %*% V[coef_names, coef_names] %*% g))
+    
+    c(slope = slope, se = se)
+  }
+  
+  out <- t(sapply(bg, get_slope))
+  
+  data.frame(
+    clim_predictability_annual_fixed_fixed = bg,
+    slope = out[, "slope"],
+    lower = out[, "slope"] - 1.96 * out[, "se"],
+    upper = out[, "slope"] + 1.96 * out[, "se"],
+    anomaly = anom
+  )
+}
+
+# run all models
+df_all <- map_dfr(anomaly_vars, get_slope_df)
+
+
+df_all$anomaly <- recode(df_all$anomaly,
+                         clim_anomaly_temp_30 = "30 days",
+                         clim_anomaly_temp_60 = "60 days",
+                         clim_anomaly_temp_90 = "90 days"
+)
+
+
+ggplot(df_all, aes(clim_predictability_annual_fixed_fixed, slope, color = anomaly, fill = anomaly)) +
+  
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(size = 1.3) +
+  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  
+  scale_color_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  scale_fill_manual(values = c("#2CA58D", "#F28E2B", "#6C6BD1")) +
+  
+  theme_classic(base_size = 14, base_family = "Garamond") +
+  
+  labs(
+    x = "Site annual temperature predictability",
+    y = "Phenological sensitivity\n(slope of onset vs temperature anomaly)",
+    color = "Time window",
+    fill = "Time window"
+  )
+
+
+#### Models: testing non-linear response of phenological sensitivity to TEMPERATURE experienced pre-onset ####
 
 # models to test the non-linear relationship between phenological sensitivity (slope of onset ~ temperature anomaly) and background temperature (mean pre-onset temperature), 
 # for each combination of anomaly and background variables (using different time-windows)
@@ -323,7 +653,7 @@ get_slope_df_ci <- function(anom, back) {
   b <- fixef(mod)
   V <- vcov(mod)
   
-  bg_seq <- seq(-2, 2, length.out = 200)
+  bg_seq <- seq(-2.5, 2.5, length.out = 200)
   
   # noms coeficients
   cn <- c(
@@ -360,24 +690,6 @@ get_slope_df_ci <- function(anom, back) {
 
 slopes_ci_df <- pmap_dfr(grid, ~get_slope_df_ci(..1, ..2))
 
-scale_color_manual(
-  values = c("#E64B35", "#00A087", "#4DBBD5"),
-  labels = c("30 days", "60 days", "90 days"),
-  name = "Temperature anomaly\n(window)"
-) +
-  scale_fill_manual(
-    values = c("#E64B35", "#00A087", "#4DBBD5"),
-    labels = c("30 days", "60 days", "90 days"),
-    name = "Temperature anomaly\n(window)"
-  )
-
-labeller = labeller(
-  background = c(
-    clim_background_temp_30 = "Pre-onset temperature (30 days)",
-    clim_background_temp_60 = "Pre-onset temperature (60 days)",
-    clim_background_temp_90 = "Pre-onset temperature (90 days)"
-  )
-)
 
 
 ggplot(slopes_ci_df, aes(bg, slope, color = anomaly, fill = anomaly)) +
@@ -398,14 +710,14 @@ ggplot(slopes_ci_df, aes(bg, slope, color = anomaly, fill = anomaly)) +
   
   scale_color_manual(
     values = c("#2CA58D", "#F28E2B", "#6C6BD1"),
-    labels = c("30 days", "60 days", "90 days"),
-    name = "Temperature anomaly\n(time window)"
+    labels = c("30-days anomaly TW", "60-days anomaly TW", "90-days anomaly TW"),
+    name = ""
   ) +
   
   scale_fill_manual(
     values = c("#2CA58D", "#F28E2B", "#6C6BD1"),
-    labels = c("30 days", "60 days", "90 days"),
-    name = "Temperature anomaly\n(time window)"
+    labels = c("30-days anomaly TW", "60-days anomaly TW", "90-days anomaly TW"),
+    name = ""
   ) +
   
   labs(
@@ -413,7 +725,7 @@ ggplot(slopes_ci_df, aes(bg, slope, color = anomaly, fill = anomaly)) +
     y = "Phenological sensitivity\n(slope onset ~ temperature anomaly)"
   ) +
   
-  theme_classic(base_size = 14) +
+  theme_classic(base_size = 14, base_family = "Garamond") +
   
   theme(
     strip.background = element_rect(fill = "grey90", color = "black"),
