@@ -8,6 +8,9 @@
 #
 # ============================================================================================ #
 
+# Clean session
+rm(list = ls())
+
 #### Load required libraries ####
 # ---
 library(data.table)  # For efficient data handling
@@ -24,6 +27,7 @@ library(ggeffects)
 library(Matrix)
 library(lmerTest)
 library(extrafont)
+
 # ---
 
 #### Data Import and Preparation ####
@@ -39,7 +43,7 @@ species_traits <- read.csv(here::here("data", "species_trait_table.csv"), sep = 
 
 #### Merge datasets ####
 # 1. Filter and convert to sf
-coords_sf <- ebms_coord_df |>
+coords_sf <- ebms_transect_coord |>
   filter(!is.na(transect_lon),
          !is.na(transect_lat)) |>
   distinct(transect_id, transect_lon, transect_lat) |>
@@ -59,7 +63,7 @@ coord_site <- coords_wgs84 |>
 
 clim_vars <- clim_vars |>
   left_join(coord_site, by = c("SITE_ID" = "transect_id")) |>
-  mutate(latitude_sc = scale(latitude)[,1])
+  mutate(latitude = scale(latitude)[,1])
 
 df <- phenology_estimates |>
   left_join(
@@ -123,7 +127,7 @@ df_cor <- df |>
            clim_autocorr_temp_90,
            clim_stability_temp_90,
            clim_predictability_temp_90,
-           photo_90,
+           photo_winter_fixed_fixed,
            latitude)
 
 # --- long format ---
@@ -141,7 +145,7 @@ labels <- c(
   clim_autocorr_temp_90     = "Autocorrelation\n(lag-1)",
   clim_stability_temp_90    = "Stability\n(-SD)",
   clim_predictability_temp_90 = "Predictability\n(-Var residuals)",
-  photo_90 = "Photoperiod\n(daily hours)",
+  photo_winter_fixed_fixed = "Photoperiod\n(daily hours)",
   latitude                  = "Latitude\n(degrees)"
 )
 
@@ -177,7 +181,7 @@ cor_mat <- df_cor |>
          clim_autocorr_temp_90,
          clim_stability_temp_90,
          clim_predictability_temp_90,
-         photo_90,
+         photo_winter_fixed_fixed,
          latitude) |>
   cor(use = "complete.obs")
 
@@ -221,19 +225,217 @@ ggsave(
 )
 
 
-#### Models phenotypic plasticity ####
+#### Models: testing non-linear response of phenological sensitivity to temperature experienced pre-onset ####
 
-#### Model selection ####
+# models to test the non-linear relationship between phenological sensitivity (slope of onset ~ temperature anomaly) and background temperature (mean pre-onset temperature), 
+# for each combination of anomaly and background variables (using different time-windows)
+
+anomaly_vars   <- c("clim_anomaly_temp_30", 
+                    "clim_anomaly_temp_60", 
+                    "clim_anomaly_temp_90")
+
+background_vars <- c("clim_background_temp_30", 
+                     "clim_background_temp_60", 
+                     "clim_background_temp_90")
+
+grid <- expand.grid(
+  anomaly = anomaly_vars,
+  background = background_vars,
+  stringsAsFactors = FALSE
+)
+
+fit_models <- function(anom, back) {
+  
+  # fórmules
+  f_lin <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * ", back,
+           " + (1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  f_quad <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * (", back, " + I(", back, "^2))",
+           " + (1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  # models
+  mod_lin <- lmer(f_lin, data = df, REML = FALSE,
+                  control = lmerControl(optimizer = "bobyqa",
+                                        optCtrl = list(maxfun = 2e6)))
+  
+  mod_quad <- lmer(f_quad, data = df, REML = FALSE,
+                   control = lmerControl(optimizer = "bobyqa",
+                                         optCtrl = list(maxfun = 2e6)))
+  
+  # coeficients
+  coefs <- fixef(mod_quad)
+  
+  beta_lin  <- coefs[paste0(anom, ":", back)]
+  beta_quad <- coefs[paste0(anom, ":I(", back, "^2)")]
+  
+  # òptim (evitar divisió per 0)
+  optimum <- ifelse(abs(beta_quad) > 1e-6,
+                    -beta_lin / (2 * beta_quad),
+                    NA)
+  
+  tibble(
+    anomaly = anom,
+    background = back,
+    
+    AIC_lin = AIC(mod_lin),
+    AIC_quad = AIC(mod_quad),
+    deltaAIC = AIC(mod_lin) - AIC(mod_quad),
+    
+    beta_linear = beta_lin,
+    beta_quad = beta_quad,
+    
+    quad_sign = case_when(
+      beta_quad > 0 ~ "U",
+      beta_quad < 0 ~ "inverted_U",
+      TRUE ~ "none"
+    ),
+    
+    optimum = optimum
+  )
+}
+
+results_full <- pmap_dfr(grid, ~fit_models(..1, ..2)) %>%
+  arrange(AIC_quad)
+
+results_full
+
+#  Plotting the slope of the relationship between onset and temperature anomaly across the range of background temperatures, with confidence intervals.
+
+get_slope_df_ci <- function(anom, back) {
+  
+  formula <- as.formula(
+    paste0("ONSET_mean ~ ", anom, " * (", back, " + I(", back, "^2)) + ",
+           "(1 | SITE_ID) + (1 + ", anom, " | SPECIES)")
+  )
+  
+  mod <- lmer(
+    formula,
+    data = df,
+    REML = FALSE,
+    control = lmerControl(optimizer = "bobyqa",
+                          optCtrl = list(maxfun = 2e6))
+  )
+  
+  b <- fixef(mod)
+  V <- vcov(mod)
+  
+  bg_seq <- seq(-2, 2, length.out = 200)
+  
+  # noms coeficients
+  cn <- c(
+    anom,
+    paste0(anom, ":", back),
+    paste0(anom, ":I(", back, "^2)")
+  )
+  
+  # matriu X
+  X <- cbind(
+    1,
+    bg_seq,
+    bg_seq^2
+  )
+  
+  colnames(X) <- cn
+  
+  # slope
+  slope <- as.numeric(X %*% b[cn])
+  
+  # SE
+  V_sub <- V[cn, cn]
+  se <- sqrt(diag(X %*% V_sub %*% t(X)))
+  
+  tibble(
+    bg = bg_seq,
+    slope = slope,
+    lower = slope - 1.96 * se,
+    upper = slope + 1.96 * se,
+    anomaly = anom,
+    background = back
+  )
+}
+
+slopes_ci_df <- pmap_dfr(grid, ~get_slope_df_ci(..1, ..2))
+
+scale_color_manual(
+  values = c("#E64B35", "#00A087", "#4DBBD5"),
+  labels = c("30 days", "60 days", "90 days"),
+  name = "Temperature anomaly\n(window)"
+) +
+  scale_fill_manual(
+    values = c("#E64B35", "#00A087", "#4DBBD5"),
+    labels = c("30 days", "60 days", "90 days"),
+    name = "Temperature anomaly\n(window)"
+  )
+
+labeller = labeller(
+  background = c(
+    clim_background_temp_30 = "Pre-onset temperature (30 days)",
+    clim_background_temp_60 = "Pre-onset temperature (60 days)",
+    clim_background_temp_90 = "Pre-onset temperature (90 days)"
+  )
+)
+
+
+ggplot(slopes_ci_df, aes(bg, slope, color = anomaly, fill = anomaly)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.4) +
+  geom_line(size = 1.2) +
+  
+  facet_wrap(
+    ~ background,
+    nrow = 1,
+    labeller = as_labeller(c(
+      clim_background_temp_30 = "30-days site mean TW",
+      clim_background_temp_60 = "60-days site mean TW",
+      clim_background_temp_90 = "90-days site mean TW"
+    ))
+  ) +
+  
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  
+  scale_color_manual(
+    values = c("#2CA58D", "#F28E2B", "#6C6BD1"),
+    labels = c("30 days", "60 days", "90 days"),
+    name = "Temperature anomaly\n(time window)"
+  ) +
+  
+  scale_fill_manual(
+    values = c("#2CA58D", "#F28E2B", "#6C6BD1"),
+    labels = c("30 days", "60 days", "90 days"),
+    name = "Temperature anomaly\n(time window)"
+  ) +
+  
+  labs(
+    x = "Site mean pre-onset temperature (scaled)",
+    y = "Phenological sensitivity\n(slope onset ~ temperature anomaly)"
+  ) +
+  
+  theme_classic(base_size = 14) +
+  
+  theme(
+    strip.background = element_rect(fill = "grey90", color = "black"),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+
+
+#### General Models on phenotypic plasticity ####
+
+#### General model selection ####
 
 model_set_plasticity <- function(d) {
   
   d <- d %>%
     dplyr::filter(
       !is.na(ONSET_mean),
-      !is.na(clim_anomaly_temp_90_sc),
-      !is.na(clim_background_temp_90_sc),
-      !is.na(clim_predictability_temp_90_sc),
-      !is.na(photo_90_sc)
+      !is.na(clim_anomaly_temp_90),
+      !is.na(clim_background_temp_90),
+      !is.na(clim_predictability_temp_90),
+      !is.na(photo_winter_fixed_fixed)
     )
   
   ctrl <- lmerControl(
@@ -241,8 +443,8 @@ model_set_plasticity <- function(d) {
     optCtrl = list(maxfun = 2e6)
   )
   
-  f_base <- ONSET_mean ~ clim_anomaly_temp_90_sc +
-    (1 + clim_anomaly_temp_90_sc || SPECIES) +
+  f_base <- ONSET_mean ~ clim_anomaly_temp_90 +
+    (1 + clim_anomaly_temp_90 || SPECIES) +
     (1 | SITE_ID)
   
   list(
@@ -252,58 +454,58 @@ model_set_plasticity <- function(d) {
     
     # H2
     m2 = lmer(update(f_base,
-                     . ~ . + clim_background_temp_90_sc +
-                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc),
+                     . ~ . + clim_background_temp_90 +
+                       clim_anomaly_temp_90:clim_background_temp_90),
               data = d, REML = FALSE, control = ctrl),
     
     # H3
     m3 = lmer(update(f_base,
-                     . ~ . + clim_predictability_temp_90_sc +
-                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc),
+                     . ~ . + clim_predictability_temp_90 +
+                       clim_anomaly_temp_90:clim_predictability_temp_90),
               data = d, REML = FALSE, control = ctrl),
     
     # H4
     m4 = lmer(update(f_base,
-                     . ~ . + photo_90_sc +
-                       clim_anomaly_temp_90_sc:photo_90_sc),
+                     . ~ . + photo_winter_fixed_fixed +
+                       clim_anomaly_temp_90:photo_winter_fixed_fixed),
               data = d, REML = FALSE, control = ctrl),
     
     # H5
     m5 = lmer(update(f_base,
                      . ~ . +
-                       clim_background_temp_90_sc +
-                       clim_predictability_temp_90_sc +
-                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
-                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc),
+                       clim_background_temp_90 +
+                       clim_predictability_temp_90 +
+                       clim_anomaly_temp_90:clim_background_temp_90 +
+                       clim_anomaly_temp_90:clim_predictability_temp_90),
               data = d, REML = FALSE, control = ctrl),
     
     # H6
     m6 = lmer(update(f_base,
                      . ~ . +
-                       clim_background_temp_90_sc +
-                       photo_90_sc +
-                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
-                       clim_anomaly_temp_90_sc:photo_90_sc),
+                       clim_background_temp_90 +
+                       photo_winter_fixed_fixed +
+                       clim_anomaly_temp_90:clim_background_temp_90 +
+                       clim_anomaly_temp_90:photo_winter_fixed_fixed),
               data = d, REML = FALSE, control = ctrl),
     
     # H7
     m7 = lmer(update(f_base,
                      . ~ . +
-                       clim_predictability_temp_90_sc +
-                       photo_90_sc +
-                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc +
-                       clim_anomaly_temp_90_sc:photo_90_sc),
+                       clim_predictability_temp_90 +
+                       photo_winter_fixed_fixed +
+                       clim_anomaly_temp_90:clim_predictability_temp_90 +
+                       clim_anomaly_temp_90:photo_winter_fixed_fixed),
               data = d, REML = FALSE, control = ctrl),
     
     # H8
     m8 = lmer(update(f_base,
                      . ~ . +
-                       clim_background_temp_90_sc +
-                       clim_predictability_temp_90_sc +
-                       photo_90_sc +
-                       clim_anomaly_temp_90_sc:clim_background_temp_90_sc +
-                       clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc +
-                       clim_anomaly_temp_90_sc:photo_90_sc),
+                       clim_background_temp_90 +
+                       clim_predictability_temp_90 +
+                       photo_winter_fixed_fixed +
+                       clim_anomaly_temp_90:clim_background_temp_90 +
+                       clim_anomaly_temp_90:clim_predictability_temp_90 +
+                       clim_anomaly_temp_90:photo_winter_fixed_fixed),
               data = d, REML = FALSE, control = ctrl)
   )
 }
@@ -352,19 +554,19 @@ table_final <- purrr::map_dfr(seq_len(nrow(sel_full)), function(i) {
 
 table_final <- table_final %>%
   dplyr::rename(
-    Plasticity = estimate_clim_anomaly_temp_90_sc,
-    Background = estimate_clim_background_temp_90_sc,
-    Predictability = estimate_clim_predictability_temp_90_sc,
-    Photoperiod = estimate_photo_90_sc,
+    Plasticity = estimate_clim_anomaly_temp_90,
+    Background = estimate_clim_background_temp_90,
+    Predictability = estimate_clim_predictability_temp_90,
+    Photoperiod = estimate_photo_winter_fixed_fixed,
     
     `Plasticity×Background` =
-      `estimate_clim_anomaly_temp_90_sc:clim_background_temp_90_sc`,
+      `estimate_clim_anomaly_temp_90:clim_background_temp_90`,
     
     `Plasticity×Predictability` =
-      `estimate_clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc`,
+      `estimate_clim_anomaly_temp_90:clim_predictability_temp_90`,
     
     `Plasticity×Photoperiod` =
-      `estimate_clim_anomaly_temp_90_sc:photo_90_sc`
+      `estimate_clim_anomaly_temp_90:photo_winter_fixed_fixed`
   )
 
 
@@ -399,37 +601,37 @@ table_clean <- table_final %>%
     
     Plasticity = paste0(
       round(Plasticity, 2),
-      stars(p.value_clim_anomaly_temp_90_sc)
+      stars(p.value_clim_anomaly_temp_90)
     ),
     
     Background = paste0(
       round(Background, 2),
-      stars(p.value_clim_background_temp_90_sc)
+      stars(p.value_clim_background_temp_90)
     ),
     
     Predictability = paste0(
       round(Predictability, 2),
-      stars(p.value_clim_predictability_temp_90_sc)
+      stars(p.value_clim_predictability_temp_90)
     ),
     
     Photoperiod = paste0(
       round(Photoperiod, 2),
-      stars(p.value_photo_90_sc)
+      stars(p.value_photo_winter_fixed_fixed)
     ),
     
     `Plasticity×Background` = paste0(
       round(`Plasticity×Background`, 2),
-      stars(`p.value_clim_anomaly_temp_90_sc:clim_background_temp_90_sc`)
+      stars(`p.value_clim_anomaly_temp_90:clim_background_temp_90`)
     ),
     
     `Plasticity×Predictability` = paste0(
       round(`Plasticity×Predictability`, 2),
-      stars(`p.value_clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc`)
+      stars(`p.value_clim_anomaly_temp_90:clim_predictability_temp_90`)
     ),
     
     `Plasticity×Photoperiod` = paste0(
       round(`Plasticity×Photoperiod`, 2),
-      stars(`p.value_clim_anomaly_temp_90_sc:photo_90_sc`)
+      stars(`p.value_clim_anomaly_temp_90:photo_winter_fixed_fixed`)
     )
   ) %>%
   dplyr::arrange(delta) %>%
@@ -456,13 +658,13 @@ make_forest <- function(model){
       
       term = dplyr::recode(
         term,
-        clim_anomaly_temp_90_sc = "Plasticity",
-        clim_background_temp_90_sc = "Background",
-        clim_predictability_temp_90_sc = "Predictability",
-        photo_90_sc = "Photoperiod",
-        `clim_anomaly_temp_90_sc:clim_background_temp_90_sc` = "Plasticity × Background",
-        `clim_anomaly_temp_90_sc:clim_predictability_temp_90_sc` = "Plasticity × Predictability",
-        `clim_anomaly_temp_90_sc:photo_90_sc` = "Plasticity × Photoperiod"
+        clim_anomaly_temp_90 = "Plasticity",
+        clim_background_temp_90 = "Background",
+        clim_predictability_temp_90 = "Predictability",
+        photo_winter_fixed_fixed = "Photoperiod",
+        `clim_anomaly_temp_90:clim_background_temp_90` = "Plasticity × Background",
+        `clim_anomaly_temp_90:clim_predictability_temp_90` = "Plasticity × Predictability",
+        `clim_anomaly_temp_90:photo_winter_fixed_fixed` = "Plasticity × Photoperiod"
       ),
       
       term = factor(term, levels = rev(c(
@@ -514,7 +716,7 @@ final_mod <- mods$m8
 
 pred <- ggpredict(
   final_mod,
-  terms = c("clim_anomaly_temp_90_sc", "clim_background_temp_90_sc[-1:1]")
+  terms = c("clim_anomaly_temp_90", "clim_background_temp_90[-1:1]")
 )
 
 pred$group <- factor(pred$group, levels = c("1", "0", "-1"))
@@ -561,7 +763,7 @@ ggplot(pred, aes(x, predicted, color = group)) +
 
 pred <- ggpredict(
   final_mod,
-  terms = c("clim_anomaly_temp_90_sc", "photo_90_sc[-1:1]")
+  terms = c("clim_anomaly_temp_90", "photo_winter_fixed_fixed[-1:1]")
 )
 
 pred$group <- factor(pred$group, levels = c("1", "0", "-1"))
@@ -610,7 +812,7 @@ ggplot(pred, aes(x, predicted, color = group)) +
 
 pred <- ggpredict(
   final_mod,
-  terms = c("clim_anomaly_temp_90_sc", "clim_predictability_temp_90_sc[-1:1]")
+  terms = c("clim_anomaly_temp_90", "clim_predictability_temp_90[-1:1]")
 )
 
 pred$group <- factor(pred$group, levels = c("1", "0", "-1"))

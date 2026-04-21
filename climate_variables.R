@@ -8,6 +8,11 @@
 #
 # ============================================================================================ #
 
+# Clean session
+rm(list = ls())
+
+# Libraries
+
 library(dplyr)
 library(here)
 library(data.table)
@@ -383,11 +388,10 @@ clim_vars <- merge(
 cols_to_scale <- setdiff(names(clim_vars), c("SITE_ID", "SPECIES", "YEAR"))
 
 clim_vars[
-  , (paste0(cols_to_scale, "_sc")) :=
+  , (cols_to_scale) :=
     lapply(.SD, function(x) as.numeric(scale(x))),
   .SDcols = cols_to_scale
 ]
-
 str(clim_vars)
 
 #### Save ####
