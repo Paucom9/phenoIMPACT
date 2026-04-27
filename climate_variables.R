@@ -33,7 +33,7 @@ coords_dt <- data.table(coord_site)
 
 # ---
 
-#### Fixed time-windows (independent on onset) ####
+# Get photoperiod data #
 
 # --- Ensure naming ---
 daily_temperature[, SITE_ID := transect_id]
@@ -69,119 +69,6 @@ daylength <- function(lat, doy) {
 
 daily_temperature[, photoperiod := daylength(latitude, julian_day)]
 
-# --- Define fixed seasons (correct order!) ---
-daily_temperature[, season :=
-                    fifelse(julian_day %between% c(1, 60),  "winter",
-                            fifelse(julian_day %between% c(60, 150), "spring",
-                                    fifelse(julian_day %between% c(30, 120), "preseason",
-                                            "annual")))
-]
-
-# --- Temperature + photoperiod per year × season ---
-temp_windows_fixed <- daily_temperature[
-  , .(
-    temp  = mean(temp, na.rm = TRUE),
-    photo = mean(photoperiod, na.rm = TRUE)
-  ),
-  by = .(SITE_ID, YEAR, season)
-]
-
-# --- Predictability (NO species) ---
-dt_pred_fixed <- copy(daily_temperature)
-
-mean_profile_fixed <- dt_pred_fixed[
-  , .(temp_mean = mean(temp, na.rm = TRUE)),
-  by = .(SITE_ID, season, julian_day)
-]
-
-dt_pred_fixed <- mean_profile_fixed[
-  dt_pred_fixed,
-  on = .(SITE_ID, season, julian_day)
-]
-
-dt_pred_fixed[, residual := temp - temp_mean]
-
-pred_fixed <- dt_pred_fixed[
-  , {
-    n_years <- uniqueN(YEAR)
-    list(
-      clim_predictability =
-        if (n_years >= 10) -var(residual, na.rm = TRUE) else NA_real_
-    )
-  },
-  by = .(SITE_ID, season)
-]
-
-# --- Climate metrics per site × season ---
-clim_site_fixed <- temp_windows_fixed[
-  , {
-    valid <- !is.na(temp)
-    n_years <- uniqueN(YEAR[valid])
-    
-    if (n_years >= 10 && sum(valid) > 0) {
-      list(
-        clim_background = mean(temp, na.rm = TRUE),
-        clim_trend      = coef(lm(temp ~ YEAR))[["YEAR"]] * 10,
-        clim_stability  = -sd(temp, na.rm = TRUE),
-        clim_autocorr   = acf(temp, plot = FALSE, lag.max = 1,
-                              na.action = na.pass)$acf[2]
-      )
-    } else {
-      list(
-        clim_background = NA_real_,
-        clim_trend      = NA_real_,
-        clim_stability  = NA_real_,
-        clim_autocorr   = NA_real_
-      )
-    }
-  },
-  by = .(SITE_ID, season)
-]
-
-# --- Merge everything ---
-temp_fixed_long <- merge(
-  temp_windows_fixed,
-  clim_site_fixed,
-  by = c("SITE_ID", "season")
-)
-
-temp_fixed_long <- merge(
-  temp_fixed_long,
-  pred_fixed,
-  by = c("SITE_ID", "season"),
-  all.x = TRUE
-)
-
-# --- Anomaly ---
-temp_fixed_long[, clim_anomaly := temp - clim_background]
-
-# --- Add SPECIES afterwards (for compatibility with main dataset) ---
-species_site_year <- unique(
-  phenology_estimates[, .(SITE_ID, SPECIES, YEAR)]
-)
-
-temp_fixed_long <- merge(
-  temp_fixed_long,
-  unique(phenology_estimates[, .(SITE_ID, SPECIES)]),
-  by = "SITE_ID",
-  allow.cartesian = TRUE
-)
-
-# --- Wide format ---
-clim_vars_fixed <- dcast(
-  temp_fixed_long,
-  SITE_ID + SPECIES + YEAR ~ season,
-  value.var = c(
-    "clim_anomaly",
-    "clim_background",
-    "clim_trend",
-    "clim_stability",
-    "clim_autocorr",
-    "clim_predictability",
-    "photo"
-  )
-)
-
 #### Identify relevant time windows based on mean onset ####
 
 # --- Mean onset per site ---
@@ -197,35 +84,36 @@ onset_mean_sp <- onset_mean_sp[
 
 # --- Create dt (BASE DATASET) ---
 
-dt <- daily_temperature[
+daily_temperature[, SITE_ID := transect_id]
+
+dt_onset <- daily_temperature[
   onset_mean_sp,
   on = .(SITE_ID),
   allow.cartesian = TRUE
 ]
 
-dt[, rel_day := julian_day - onset_mean]
+dt_onset[, rel_day := julian_day - onset_mean]
 
-dt <- dt[rel_day <= 0 & rel_day > -90]
-
+dt_onset <- dt_onset[rel_day <= 0 & rel_day > -90]
 
 # --- Temperature windows ---
-temp_windows <- dt[
+temp_windows <- dt_onset[
   rel_day <= 0 & rel_day > -90,
   .(
-    temp_30 = mean(temp[rel_day > -30], na.rm = TRUE),
-    temp_60 = mean(temp[rel_day > -60], na.rm = TRUE),
-    temp_90 = mean(temp, na.rm = TRUE)
+    tw30 = mean(temp[rel_day > -30], na.rm = TRUE),
+    tw60 = mean(temp[rel_day > -60], na.rm = TRUE),
+    tw90 = mean(temp, na.rm = TRUE)
   ),
   by = .(SITE_ID, SPECIES, year)
 ]
 
 # --- Photoperiod windows ---
-photo_windows <- dt[
+photo_windows <- dt_onset[
   rel_day <= 0 & rel_day > -90,
   .(
-    photo_30 = mean(photoperiod[rel_day > -30], na.rm = TRUE),
-    photo_60 = mean(photoperiod[rel_day > -60], na.rm = TRUE),
-    photo_90 = mean(photoperiod, na.rm = TRUE)
+    photo_tw30 = mean(photoperiod[rel_day > -30], na.rm = TRUE),
+    photo_tw60 = mean(photoperiod[rel_day > -60], na.rm = TRUE),
+    photo_tw90 = mean(photoperiod, na.rm = TRUE)
   ),
   by = .(SITE_ID, SPECIES, year)
 ]
@@ -238,27 +126,27 @@ setnames(photo_windows, "year", "YEAR")
 
 # Predictability
 
-dt_pred <- copy(dt)
+dt_pred <- copy(dt_onset)
 
 # --- assign windows ---
-dt_pred[, window :=
-          fifelse(rel_day > -30 & rel_day <= 0, "temp_30",
-                  fifelse(rel_day > -60 & rel_day <= 0, "temp_60",
-                          fifelse(rel_day > -90 & rel_day <= 0, "temp_90", NA_character_)))
+dt_pred[, twindow :=
+          fifelse(rel_day > -30 & rel_day <= 0, "tw30",
+                  fifelse(rel_day > -60 & rel_day <= 0, "tw60",
+                          fifelse(rel_day > -90 & rel_day <= 0, "tw90", NA_character_)))
 ]
 
-dt_pred <- dt_pred[!is.na(window)]
+dt_pred <- dt_pred[!is.na(twindow)]
 
 # --- climatology (species-specific) ---
 mean_profile <- dt_pred[
   , .(temp_mean = mean(temp, na.rm = TRUE)),
-  by = .(SITE_ID, SPECIES, window, julian_day)
+  by = .(SITE_ID, SPECIES, twindow, julian_day)
 ]
 
 # --- join + residuals ---
 dt_pred <- mean_profile[
   dt_pred,
-  on = .(SITE_ID, SPECIES, window, julian_day)
+  on = .(SITE_ID, SPECIES, twindow, julian_day)
 ]
 
 dt_pred[, residual := temp - temp_mean]
@@ -274,35 +162,34 @@ pred_window <- dt_pred[
       } else NA_real_
     )
   },
-  by = .(SITE_ID, SPECIES, window)
+  by = .(SITE_ID, SPECIES, twindow)
 ]
 
 #---
-
 
 # Climate metrics per site × window
 
 temp_long <- melt(
   temp_windows,
   id.vars = c("SITE_ID", "SPECIES", "YEAR"),
-  measure.vars = c("temp_30", "temp_60", "temp_90"),
-  variable.name = "window",
-  value.name = "temp"
+  measure.vars = c("tw30", "tw60", "tw90"),
+  variable.name = "twindow",
+  value.name = "tw"
 )
 
 clim_site_window <- temp_long[
   , {
     
-    valid <- !is.na(temp)
+    valid <- !is.na(tw)
     n_years <- uniqueN(YEAR[valid])
     
     if (n_years >= 10 && sum(valid) > 0) {
       
       list(
-        clim_background = mean(temp, na.rm = TRUE),
-        clim_trend = coef(lm(temp ~ YEAR))[["YEAR"]] * 10,
-        clim_stability = -sd(temp, na.rm = TRUE),
-        clim_autocorr = acf(temp, plot = FALSE, lag.max = 1,
+        clim_background = mean(tw, na.rm = TRUE),
+        clim_trend = coef(lm(tw ~ YEAR))[["YEAR"]] * 10,
+        clim_stability = -sd(tw, na.rm = TRUE),
+        clim_autocorr = acf(tw, plot = FALSE, lag.max = 1,
                             na.action = na.pass)$acf[2]
       )
       
@@ -317,7 +204,7 @@ clim_site_window <- temp_long[
     }
     
   },
-  by = .(SITE_ID, SPECIES, window)
+  by = .(SITE_ID, SPECIES, twindow)
 ]
 
 #---
@@ -326,7 +213,7 @@ clim_site_window <- temp_long[
 
 clim_site_window <- pred_window[
   clim_site_window,
-  on = .(SITE_ID, SPECIES, window)
+  on = .(SITE_ID, SPECIES, twindow)
 ]
 
 #---
@@ -335,10 +222,10 @@ clim_site_window <- pred_window[
 
 temp_long <- clim_site_window[
   temp_long,
-  on = .(SITE_ID, SPECIES, window)
+  on = .(SITE_ID, SPECIES, twindow)
 ]
 
-temp_long[, clim_anomaly := temp - clim_background]
+temp_long[, clim_anomaly := tw - clim_background]
 
 #---
 
@@ -346,7 +233,7 @@ temp_long[, clim_anomaly := temp - clim_background]
 
 clim_vars <- dcast(
   temp_long,
-  SITE_ID + SPECIES + YEAR ~ window,
+  SITE_ID + SPECIES + YEAR ~ twindow,
   value.var = c("clim_anomaly",
                 "clim_background",
                 "clim_trend",
@@ -360,25 +247,6 @@ clim_vars <- dcast(
 clim_vars <- merge(
   clim_vars,
   photo_windows,
-  by = c("SITE_ID", "SPECIES", "YEAR"),
-  all.x = TRUE
-)
-
-# --- Rename fixed variables BEFORE merging ----
-
-fixed_cols <- setdiff(names(clim_vars_fixed), c("SITE_ID","SPECIES","YEAR"))
-
-setnames(
-  clim_vars_fixed,
-  old = fixed_cols,
-  new = paste0(fixed_cols, "_fixed")
-)
-
-# --- Merge fixed + dynamic ----
-
-clim_vars <- merge(
-  clim_vars,
-  clim_vars_fixed,
   by = c("SITE_ID", "SPECIES", "YEAR"),
   all.x = TRUE
 )
@@ -399,241 +267,5 @@ str(clim_vars)
 write.csv(
   clim_vars,
   here::here("output", "climate", "climate_variables.csv"),
-  row.names = FALSE
-)
-
-
-
-
-
-
-
-
-#####################       OFFSET         ##############################
-
-#--- Mean offset per site ---
-  offset_mean_sp <- phenology_estimates %>%
-  group_by(SPECIES, SITE_ID) %>%
-  summarise(offset_mean = mean(OFFSET_mean, na.rm = TRUE),
-            .groups = "drop") %>%
-  as.data.table()
-
-offset_mean_sp <- offset_mean_sp[
-  SITE_ID %in% daily_temperature$SITE_ID
-]
-
-# --- Create dt (BASE DATASET) ---
-dt <- daily_temperature[
-  offset_mean_sp,
-  on = .(SITE_ID),
-  allow.cartesian = TRUE
-]
-
-dt[, rel_day := julian_day - offset_mean]
-
-dt <- dt[rel_day <= 0 & rel_day > -90]
-
-# --- ADD COORDS  ---
-dt <- merge(dt, coords_dt, by = ("SITE_ID" = "transect_id"), all.x = TRUE)
-
-
-# --- Photoperiod ---
-
-dt[, photoperiod := daylength(latitude, julian_day)]
-
-# --- Temperature windows ---
-temp_windows <- dt[
-  rel_day <= 0 & rel_day > -90,
-  .(
-    temp_30 = mean(temp[rel_day > -30], na.rm = TRUE),
-    temp_60 = mean(temp[rel_day > -60], na.rm = TRUE),
-    temp_90 = mean(temp, na.rm = TRUE)
-  ),
-  by = .(SITE_ID, SPECIES, year)
-]
-
-# --- Photoperiod windows ---
-photo_windows <- dt[
-  rel_day <= 0 & rel_day > -90,
-  .(
-    photo_30 = mean(photoperiod[rel_day > -30], na.rm = TRUE),
-    photo_60 = mean(photoperiod[rel_day > -60], na.rm = TRUE),
-    photo_90 = mean(photoperiod, na.rm = TRUE)
-  ),
-  by = .(SITE_ID, SPECIES, year)
-]
-
-setnames(temp_windows, "year", "YEAR")
-setnames(photo_windows, "year", "YEAR")
-
-
-
-
-#### calculate temperature-based variables ####
-
-# Predictability
-
-dt_pred <- copy(dt)
-
-# --- assign windows ---
-dt_pred[, window :=
-          fifelse(rel_day > -30 & rel_day <= 0, "temp_30",
-                  fifelse(rel_day > -60 & rel_day <= 0, "temp_60",
-                          fifelse(rel_day > -90 & rel_day <= 0, "temp_90", NA_character_)))
-]
-
-dt_pred <- dt_pred[!is.na(window)]
-
-# --- climatology (species-specific) ---
-mean_profile <- dt_pred[
-  , .(temp_mean = mean(temp, na.rm = TRUE)),
-  by = .(SITE_ID, SPECIES, window, julian_day)
-]
-
-# --- join + residuals ---
-dt_pred <- mean_profile[
-  dt_pred,
-  on = .(SITE_ID, SPECIES, window, julian_day)
-]
-
-dt_pred[, residual := temp - temp_mean]
-
-# --- predictability ---
-pred_window <- dt_pred[
-  , {
-    n_years <- uniqueN(year)
-    
-    list(
-      clim_predictability = if (n_years >= 10) {
-        -var(residual, na.rm = TRUE)
-      } else NA_real_
-    )
-  },
-  by = .(SITE_ID, SPECIES, window)
-]
-
-#---
-
-
-# Climate metrics per site × window
-
-temp_long <- melt(
-  temp_windows,
-  id.vars = c("SITE_ID", "SPECIES", "YEAR"),
-  measure.vars = c("temp_30", "temp_60", "temp_90"),
-  variable.name = "window",
-  value.name = "temp"
-)
-
-clim_site_window <- temp_long[
-  , {
-    
-    valid <- !is.na(temp)
-    n_years <- uniqueN(YEAR[valid])
-    
-    if (n_years >= 10 && sum(valid) > 0) {
-      
-      list(
-        clim_background = mean(temp, na.rm = TRUE),
-        clim_trend = coef(lm(temp ~ YEAR))[["YEAR"]] * 10,
-        clim_stability = -sd(temp, na.rm = TRUE),
-        clim_autocorr = acf(temp, plot = FALSE, lag.max = 1,
-                            na.action = na.pass)$acf[2]
-      )
-      
-    } else {
-      
-      list(
-        clim_background = NA_real_,
-        clim_trend = NA_real_,
-        clim_stability = NA_real_,
-        clim_autocorr = NA_real_
-      )
-    }
-    
-  },
-  by = .(SITE_ID, SPECIES, window)
-]
-
-#---
-
-# ADD predictability ----
-
-clim_site_window <- pred_window[
-  clim_site_window,
-  on = .(SITE_ID, SPECIES, window)
-]
-
-#---
-
-# Merge back + anomalies ----
-
-temp_long <- clim_site_window[
-  temp_long,
-  on = .(SITE_ID, SPECIES, window)
-]
-
-temp_long[, clim_anomaly := temp - clim_background]
-
-#---
-
-# --- Wide format (onset-based) ----
-
-clim_vars <- dcast(
-  temp_long,
-  SITE_ID + SPECIES + YEAR ~ window,
-  value.var = c("clim_anomaly",
-                "clim_background",
-                "clim_trend",
-                "clim_stability",
-                "clim_autocorr",
-                "clim_predictability")
-)
-
-# --- Add photoperiod (onset-based) ----
-
-clim_vars <- merge(
-  clim_vars,
-  photo_windows,
-  by = c("SITE_ID", "SPECIES", "YEAR"),
-  all.x = TRUE
-)
-
-# --- Rename fixed variables BEFORE merging ----
-
-fixed_cols <- setdiff(names(clim_vars_fixed), c("SITE_ID","SPECIES","YEAR"))
-
-setnames(
-  clim_vars_fixed,
-  old = fixed_cols,
-  new = paste0(fixed_cols, "_fixed")
-)
-
-# --- Merge fixed + dynamic ----
-
-clim_vars <- merge(
-  clim_vars,
-  clim_vars_fixed,
-  by = c("SITE_ID", "SPECIES", "YEAR"),
-  all.x = TRUE
-)
-
-# --- Scaling (all variables together) ----
-
-cols_to_scale <- setdiff(names(clim_vars), c("SITE_ID", "SPECIES", "YEAR"))
-
-clim_vars[
-  , (paste0(cols_to_scale, "_sc")) :=
-    lapply(.SD, function(x) as.numeric(scale(x))),
-  .SDcols = cols_to_scale
-]
-
-str(clim_vars)
-
-#### Save ####
-
-write.csv(
-  clim_vars,
-  here::here("output", "climate", "climate_variables_offset.csv"),
   row.names = FALSE
 )
