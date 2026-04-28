@@ -159,20 +159,7 @@ clim_all <- rbindlist(
   fill = TRUE
 )
 
-str(clim_all)
 
-
-# Scale variables #
-
-cols_to_scale <- setdiff(
-  names(clim_all),
-  c("SITE_ID", "SPECIES", "YEAR", "pheno_type")
-)
-
-clim_all[
-  , (cols_to_scale) := lapply(.SD, function(x) as.numeric(scale(x))),
-  .SDcols = cols_to_scale
-]
 
 # Calculate climate metrics for each site, species, and phenophase #
 
@@ -236,30 +223,40 @@ compute_predictability <- function(pheno_var, dt_climate, pheno_dt) {
       sp <- pheno_site$SPECIES[i]
       ph <- pheno_site$pheno[i]
       
-      dt_site[, rel_day := julian_day - ph]
-      dt_sub <- dt_site[rel_day <= 0 & rel_day > -90]
+      # evita modificar dt_site
+      dt_sub <- dt_site[, .(year, julian_day, temp)]
+      dt_sub[, rel_day := julian_day - ph]
+      dt_sub <- dt_sub[rel_day <= 0 & rel_day > -90]
       
       if (nrow(dt_sub) == 0) next
       
-      dt_sub[, twindow :=
-               fifelse(rel_day > -30, "tw30",
-                       fifelse(rel_day > -60, "tw60", "tw90"))]
+      # --- windows ---
+      dt30 <- dt_sub[rel_day > -30]
+      dt60 <- dt_sub[rel_day > -60]
+      dt90 <- dt_sub[rel_day > -90]
       
-      # climatology
-      clim <- dt_sub[
-        , .(temp_mean = mean(temp)),
-        by = .(twindow, julian_day)
-      ]
+      # --- function per calcular predictability ---
+      calc_pred <- function(dt) {
+        if (nrow(dt) < 10) return(NA_real_)
+        
+        clim <- dt[, .(temp_mean = mean(temp)), by = julian_day]
+        dt2 <- clim[dt, on = "julian_day"]
+        dt2[, residual := temp - temp_mean]
+        
+        -var(dt2$residual, na.rm = TRUE)
+      }
       
-      dt_sub <- clim[dt_sub, on = .(twindow, julian_day)]
-      dt_sub[, residual := temp - temp_mean]
-      
-      pred <- dt_sub[
-        , .(clim_predictability = -var(residual, na.rm = TRUE)),
-        by = twindow
-      ]
-      
-      pred[, `:=`(SITE_ID = site, SPECIES = sp, pheno_type = pheno_var)]
+      pred <- data.table(
+        twindow = c("tw30", "tw60", "tw90"),
+        clim_predictability = c(
+          calc_pred(dt30),
+          calc_pred(dt60),
+          calc_pred(dt90)
+        ),
+        SITE_ID = site,
+        SPECIES = sp,
+        pheno_type = pheno_var
+      )
       
       res[[length(res) + 1]] <- pred
     }
@@ -296,18 +293,19 @@ clim_vars_final <- merge(
   all.x = TRUE
 )
 
-# Scale predictability #
+# scale everything
 
-pred_cols <- grep("^clim_predictability", names(clim_vars_final), value = TRUE)
+cols_to_scale <- setdiff(
+  names(clim_vars_final),
+  c("SITE_ID", "SPECIES", "YEAR", "pheno_type")
+)
 
 clim_vars_final[
-  , (pred_cols) := lapply(.SD, function(x) as.numeric(scale(x))),
-  .SDcols = pred_cols
+  , (cols_to_scale) := lapply(.SD, function(x) as.numeric(scale(x))),
+  .SDcols = cols_to_scale
 ]
 
 clim_vars_final[, c("tw30", "tw60", "tw90") := NULL]
-
-str(clim_vars_final)
 
 # Save #
 
