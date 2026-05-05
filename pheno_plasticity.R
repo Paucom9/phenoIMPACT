@@ -70,7 +70,7 @@ coord_site <- coords_sf |>
 
 # Add latitude and BMS identity to climate variables
 clim_vars <- clim_vars |>
-  dplyr::select(-latitude, -dplyr::any_of("bms_id")) |>
+  dplyr::select(-dplyr::any_of("bms_id")) |>
   dplyr::left_join(coord_site, by = "SITE_ID") |>
   dplyr::mutate(latitude = as.numeric(scale(latitude)))
 
@@ -146,23 +146,21 @@ ggsave(
 
 # Inspect distribution of predictor variables #
 
-# variables to plot (explicit → evita errors)
+# variables to plot
 vars_plot <- c(
-  "clim_background_tw90",
-  "clim_trend_tw90",
-  "clim_autocorr_tw90",
-  "clim_stability_tw90",
-  "clim_predictability_tw90",
-  "photo_tw90",
-  "latitude"
+  "clim_background_tw60",
+  "clim_trend_tw60",
+  "clim_autocorr_tw60",
+  "clim_stability_tw60",
+  "clim_predictability_tw60",
+  "photo_tw60"
 )
 
 # remove pseudo-replication (one row per site × year × pheno_type)
 df_plot <- df |>
+  dplyr::filter(pheno_type == "ONSET_mean") |>
   dplyr::distinct(
     SITE_ID,
-    YEAR,
-    pheno_type,
     dplyr::across(dplyr::all_of(vars_plot))
   )
 
@@ -216,25 +214,21 @@ ggsave(
 
 # Correlation among predictors # 
 
-cor_mat <- df_cor |>
-  select(clim_background_temp_90,
-         clim_trend_temp_90,
-         clim_autocorr_temp_90,
-         clim_stability_temp_90,
-         clim_predictability_temp_90,
-         photo_winter_fixed_fixed,
-         latitude) |>
+cor_mat <- df_plot |>
+  select(clim_background_tw60,
+         clim_trend_tw60,
+         clim_autocorr_tw60,
+         clim_predictability_tw60,
+         photo_tw60) |>
   cor(use = "complete.obs")
 
 
 new_names <- c(
-  "Background",
-  "Trend",
-  "Autocorr",
-  "Stability",
-  "Predictability",
-  "Photoperiod",
-  "Latitude"
+  "Mean temp.",
+  "Temp. trend",
+  "Temp. autocorr.",
+  "Temp. stab.",
+  "Photoperiod"
 )
 
 rownames(cor_mat) <- new_names
@@ -259,7 +253,7 @@ corr_clim_pred_sds
 
 # Save plot
 ggsave(
-  filename = here::here("output", "figures", "corr_site_vars_26_3_26B.png"),
+  filename = here::here("output", "figures", "corr_site_vars_4_5_26.png"),
   plot = corr_clim_pred_sds,
   width = 6,
   height = 5,
@@ -381,16 +375,16 @@ df_pred <- df_pred %>%
     upper = fit + 1.96 * se
   )
 
-ggplot(df_pred, aes(anomaly, fit,
-                    color = window,
-                    fill = window)) +
+tw_onset_preds <- ggplot(df_pred, aes(anomaly, fit,
+                                      color = window,
+                                      fill = window)) +
   
   geom_line(size = 1.2) +
   
   geom_ribbon(aes(ymin = lower, ymax = upper),
               alpha = 0.2, color = NA) +
   
-  theme_classic(base_family = "Garamond") +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Temperature anomaly",
@@ -398,6 +392,16 @@ ggplot(df_pred, aes(anomaly, fit,
     color = "Time window",
     fill = "Time window"
   )
+
+tw_onset_preds
+
+ggsave(
+  filename = here("output", "figures", "tw_onset_preds.png"),
+  plot = tw_onset_preds,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
 
 
 # ---------------------------------------------------------------------------- #
@@ -651,28 +655,28 @@ plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = variable, f
   
   scale_color_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
     
   )) +
   
   scale_fill_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
   )) +
   
   coord_cartesian(ylim = c(-9, -1)) +
   
-  theme_classic(base_family = "Garamond", base_size = 14) +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Environmental gradient",
     y = "Phenological plasticity\n(slope of onset vs temperature anomaly)",
-    color = "Environmental gradient",
-    fill = "Environmental gradient"
+    color = "",
+    fill = ""
   )
 plasticity_interactions_plot
 
@@ -1235,16 +1239,16 @@ df_pred <- df_pred %>%
     upper = fit + 1.96 * se
   )
 
-ggplot(df_pred, aes(anomaly, fit,
-                    color = window,
-                    fill = window)) +
+tw_peak_plasticity <- ggplot(df_pred, aes(anomaly, fit,
+                                          color = window,
+                                          fill = window)) +
   
   geom_line(size = 1.2) +
   
   geom_ribbon(aes(ymin = lower, ymax = upper),
               alpha = 0.2, color = NA) +
   
-  theme_classic(base_family = "Garamond") +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Temperature anomaly",
@@ -1252,6 +1256,16 @@ ggplot(df_pred, aes(anomaly, fit,
     color = "Time window",
     fill = "Time window"
   )
+
+tw_peak_plasticity
+
+ggsave(
+  filename = here("output", "figures", "tw_peak_preds.png"),
+  plot = tw_peak_plasticity,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1505,28 +1519,28 @@ first_peak_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = 
   
   scale_color_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
     
   )) +
   
   scale_fill_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
   )) +
   
   coord_cartesian(ylim = c(-7, -2.5)) +
   
-  theme_classic(base_family = "Garamond", base_size = 14) +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Environmental gradient",
     y = "Phenological plasticity\n(slope of first peak day vs temperature anomaly)",
-    color = "Environmental gradient",
-    fill = "Environmental gradient"
+    color = "",
+    fill = ""
   )
 first_peak_plasticity_interactions_plot
 
@@ -2065,16 +2079,16 @@ df_pred <- df_pred %>%
     upper = fit + 1.96 * se
   )
 
-ggplot(df_pred, aes(anomaly, fit,
-                    color = window,
-                    fill = window)) +
+tw_offset_univoltine <- ggplot(df_pred, aes(anomaly, fit,
+                                            color = window,
+                                            fill = window)) +
   
   geom_line(size = 1.2) +
   
   geom_ribbon(aes(ymin = lower, ymax = upper),
               alpha = 0.2, color = NA) +
   
-  theme_classic(base_family = "Garamond") +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Temperature anomaly",
@@ -2083,13 +2097,22 @@ ggplot(df_pred, aes(anomaly, fit,
     fill = "Time window"
   )
 
+tw_offset_univoltine
+
+ggsave(
+  filename = here("output", "figures", "tw_offset_univoltine.png"),
+  plot = tw_offset_univoltine,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
 
 #1. Multivoltine species 
 
 options(na.action = "na.omit")
 
 mod_30_off_multi <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw30 +
+  OFFSET_mean ~ clim_anomaly_tw30 +
     (1 | SITE_ID) + (1 + clim_anomaly_tw30 | SPECIES),
   data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
   REML = FALSE,
@@ -2100,7 +2123,7 @@ mod_30_off_multi <- lmer(
 )
 
 mod_60_off_multi <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw60 +
+  OFFSET_mean ~ clim_anomaly_tw60 +
     (1 | SITE_ID) + (1 + clim_anomaly_tw60 | SPECIES),
   data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
   REML = FALSE,
@@ -2111,7 +2134,7 @@ mod_60_off_multi <- lmer(
 )
 
 mod_90_off_multi <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 +
+  OFFSET_mean ~ clim_anomaly_tw90 +
     (1 | SITE_ID) + (1 + clim_anomaly_tw90 | SPECIES),
   data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
   REML = FALSE,
@@ -2158,30 +2181,23 @@ ggplot(df_eff, aes(x = window, y = estimate)) +
     y = "Phenological sensitivity\n(slope of offset vs temperature anomaly)"
   )
 
-make_pred <- function(model, anomaly_var, label) {
+make_pred <- function(mod, var, label) {
   
-  xseq <- seq(
-    min(model.frame(model)[[anomaly_var]], na.rm = TRUE),
-    max(model.frame(model)[[anomaly_var]], na.rm = TRUE),
-    length.out = 100
+  newdat <- data.frame(
+    temp = seq(-2, 2, length.out = 100)
   )
   
-  nd <- data.frame(
-    ONSET_mean = mean(model.frame(model)$ONSET_mean, na.rm = TRUE),
-    photo_tw90 = 0,
-    clim_background_tw90 = 0,
-    clim_predictability_tw90 = 0,
-    clim_autocorr_tw90 = 0,
-    clim_trend_tw90 = 0
+  names(newdat) <- var
+  
+  pred <- predict(
+    mod,
+    newdata = newdat,
+    re.form = NA,
+    se.fit = TRUE
   )
   
-  nd <- nd[rep(1, length(xseq)), ]
-  nd[[anomaly_var]] <- xseq
-  
-  pred <- predict(model, newdata = nd, re.form = NA, se.fit = TRUE)
-  
-  tibble::tibble(
-    x = xseq,
+  data.frame(
+    anomaly = newdat[[var]],
     fit = pred$fit,
     se = pred$se.fit,
     window = label
@@ -2192,24 +2208,23 @@ df_pred <- dplyr::bind_rows(
   make_pred(mod_30_off_multi, "clim_anomaly_tw30", "30 days"),
   make_pred(mod_60_off_multi, "clim_anomaly_tw60", "60 days"),
   make_pred(mod_90_off_multi, "clim_anomaly_tw90", "90 days")
-) |>
+) %>%
   dplyr::mutate(
     lower = fit - 1.96 * se,
     upper = fit + 1.96 * se
   )
 
-
-ggplot(df_pred, aes(x, fit,
-                    color = window,
-                    fill = window)) +
-  
+tw_offset_multivoltine <- ggplot(
+  df_pred,
+  aes(anomaly, fit, color = window, fill = window)
+) +
   geom_line(size = 1.2) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.2, color = NA) +
-  
-  theme_classic(base_family = "Garamond") +
-  
+  geom_ribbon(
+    aes(ymin = lower, ymax = upper),
+    alpha = 0.2,
+    color = NA
+  ) +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   labs(
     x = "Temperature anomaly",
     y = "Predicted offset",
@@ -2217,7 +2232,15 @@ ggplot(df_pred, aes(x, fit,
     fill = "Time window"
   )
 
+tw_offset_multivoltine
 
+ggsave(
+  filename = here("output", "figures", "tw_offset_multivoltine.png"),
+  plot = tw_offset_multivoltine,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
 
 # ---------------------------------------------------------------------------- #
 # Model selection #
@@ -2449,7 +2472,7 @@ mod_final_off_m_uni <- lmer(
   OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 *
     (photo_tw90 +
        clim_background_tw90 +
-       clim_predictability_tw90) +
+       clim_predictability_tw90 + clim_autocorr_tw90) +
     (1 | SITE_ID) +
     (1 + clim_anomaly_tw90 | SPECIES),
   data = d_off_m |> dplyr::filter(voltinism == "univoltine"),
@@ -2548,8 +2571,9 @@ df_back <- get_slope_df(
 
 df_all <- dplyr::bind_rows(
   df_photo,
+  df_back,
   df_pred,
-  df_back
+  df_auto
 )
 
 # order facets
@@ -2558,10 +2582,9 @@ df_all$variable <- factor(
   df_all$variable,
   levels = c(
     "Photoperiod",
-    "Temperature trend",
+    "Mean temperature",
     "Temperature stability",
-    "Temperature autocorrelation",
-    "Mean temperature"
+    "Temperature autocorrelation"
   )
 )
 
@@ -2578,28 +2601,28 @@ univoltine_offset_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, c
   
   scale_color_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
     
   )) +
   
   scale_fill_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
   )) +
   
-  coord_cartesian(ylim = c(-5.5, -1.5)) +
+  coord_cartesian(ylim = c(-6, -1)) +
   
-  theme_classic(base_family = "Garamond", base_size = 14) +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of onset vs temperature anomaly)",
-    color = "Environmental gradient",
-    fill = "Environmental gradient"
+    y = "Phenological plasticity\n(slope of offset vs temperature anomaly)",
+    color = "",
+    fill = ""
   )
 univoltine_offset_plasticity_interactions_plot
 
@@ -2719,8 +2742,8 @@ df_back <- get_slope_df(
 
 df_all <- dplyr::bind_rows(
   df_photo,
-  df_pred,
   df_back,
+  df_pred,
   df_auto
 )
 
@@ -2730,10 +2753,9 @@ df_all$variable <- factor(
   df_all$variable,
   levels = c(
     "Photoperiod",
-    "Temperature trend",
+    "Mean temperature",
     "Temperature stability",
-    "Temperature autocorrelation",
-    "Mean temperature"
+    "Temperature autocorrelation"
   )
 )
 
@@ -2750,28 +2772,28 @@ multivoltine_offset_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope,
   
   scale_color_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
     
   )) +
   
   scale_fill_manual(values = c(
     "Photoperiod" = "#1b9e77",
+    "Mean temperature" = "#d95f02",
     "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02",
-    "Mean temperature" = "#d95f02"
+    "Temperature autocorrelation" = "#E6AB02"
   )) +
   
   coord_cartesian(ylim = c(-4.5, 9)) +
   
-  theme_classic(base_family = "Garamond", base_size = 14) +
+  theme_classic(base_family = "Garamond", base_size = 16) +
   
   labs(
     x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of onset vs temperature anomaly)",
-    color = "Environmental gradient",
-    fill = "Environmental gradient"
+    y = "Phenological plasticity\n(slope of offset vs temperature anomaly)",
+    color = "",
+    fill = ""
   )
 multivoltine_offset_plasticity_interactions_plot
 
