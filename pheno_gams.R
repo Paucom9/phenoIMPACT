@@ -156,15 +156,14 @@ find_peaks <- function(x,
 }
 
 
-##### Loop gams and extract pheno metrics #####
+##### Loop gams and extract pheno and abundance metrics #####
 
-
-# Initialize output
 phenology_estimates <- data.frame(
   ID = character(),
   YEAR = integer(),
   SPECIES = character(),
   SITE_ID = character(),
+  ABUND_INDEX = numeric(),
   ONSET_mean = numeric(),
   ONSET_var = numeric(),
   OFFSET_mean = numeric(),
@@ -187,21 +186,31 @@ for (id in unique(m_count_filt$ID)) {
   
   pb$tick()$print()
   
-  for (SPECIES in unique(sub_count$SPECIES)){
+  for (sp in unique(sub_count$SPECIES)) {
     
-    sub_count_species <- sub_count[SPECIES == SPECIES]
+    sub_count_species <- sub_count[SPECIES == sp]
     
-    for (YEAR in unique(sub_count_species$year)) {
+    for (yr in unique(sub_count_species$year)) {
       
-      sub_count_year <- sub_count_species[year == YEAR]
-      sub_visit <- m_visit_filt[year == YEAR & SITE_ID == site]
+      sub_count_year <- sub_count_species[year == yr]
+      sub_visit <- m_visit_filt[year == yr & SITE_ID == site]
+      
+      onset_mean <- offset_mean <- flight_length_mean <- NA
+      onset_var  <- offset_var  <- flight_length_var  <- NA
+      peak_day <- first_peak <- last_peak <- n_peaks <- NA
+      abund_index <- NA
       
       # Require ≥3 weeks with records and ≥10 visits
       if (uniqueN(as.Date(sub_count_year$DATE)) >= 3 & nrow(sub_visit) >= 10) {
         
         # Zero-fill missing visits within the monitoring season
         missing_dates <- sub_visit[!DATE %in% sub_count_year$DATE]
-        missing_rows <- missing_dates %>% mutate(COUNT = 0)
+        
+        missing_rows <- missing_dates %>%
+          mutate(
+            SPECIES = sp,
+            COUNT = 0
+          )
         
         all_counts <- bind_rows(sub_count_year, missing_rows) %>%
           mutate(
@@ -209,85 +218,99 @@ for (id in unique(m_count_filt$ID)) {
             julian_day = yday(DATE)
           )
         
-        # ---- ANCHOR (structural zeros outside March–September) ----
+        # Structural zeros outside main monitoring season
         anchor_year <- data.table(
           SITE_ID = site,
-          year = YEAR,
-          SPECIES = unique(sub_count_year$SPECIES),
+          year = yr,
+          SPECIES = sp,
           COUNT = 0,
-          julian_day = c(1:30, 335:365)  # Jan–early Feb & Oct–Dec
+          julian_day = c(1:30, 335:365)
         )
         
         all_counts <- rbind(all_counts, anchor_year, fill = TRUE)
         
         tryCatch({
           
-          gam_model <- gam(COUNT ~ s(julian_day), 
-                           data = all_counts, 
-                           family = nb)
+          gam_model <- gam(
+            COUNT ~ s(julian_day),
+            data = all_counts,
+            family = nb
+          )
           
-          onset_mean <- offset_mean <- flight_length_mean <- NA
-          onset_var  <- offset_var  <- flight_length_var  <- NA
-          peak_day <- first_peak <- last_peak <- n_peaks <- NA
+          julian_days <- 1:365
           
-          if (!inherits(gam_model, "try-error")) {
+          predict_count <- predict(
+            gam_model,
+            newdata = data.frame(julian_day = julian_days),
+            type = "response"
+          )
+          
+          abund_index <- sum(predict_count, na.rm = TRUE)
+          
+          pheno <- data.frame(
+            Julian_Day = julian_days,
+            Predicted_Count = predict_count
+          )
+          
+          peaks <- which(unlist(find_peaks(
+            pheno$Predicted_Count,
+            ignore_threshold = 0.2,
+            span = 11
+          )))
+          
+          n_peaks <- length(peaks)
+          
+          if (n_peaks > 0) {
+            first_peak <- peaks[1]
+            last_peak  <- peaks[n_peaks]
+          }
+          
+          peak_day <- which.max(pheno$Predicted_Count)
+          
+          cp_mean <- cpt.mean(
+            pheno$Predicted_Count,
+            method = "PELT",
+            penalty = "Manual",
+            pen.value = 2
+          )
+          
+          cp_var <- cpt.var(
+            pheno$Predicted_Count,
+            method = "PELT",
+            penalty = "Manual",
+            pen.value = 0.05
+          )
+          
+          cps_mean <- cpts(cp_mean)
+          cps_var  <- cpts(cp_var)
+          
+          if (n_peaks > 0 &&
+              length(cps_mean) > 0 &&
+              length(cps_var) > 0 &&
+              !any(is.infinite(cps_mean)) &&
+              !any(is.infinite(cps_var))) {
             
-            julian_days <- 1:365
-            predict_count <- predict(
-              gam_model,
-              newdata = data.frame(julian_day = julian_days),
-              type = "response"
-            )
+            onset_mean <- min(cps_mean)
+            offset_mean <- max(cps_mean)
+            flight_length_mean <- offset_mean - onset_mean + 1
             
-            pheno <- data.frame(
-              Julian_Day = julian_days,
-              Predicted_Count = predict_count
-            )
-            
-            peaks <- which(unlist(find_peaks(
-              pheno$Predicted_Count,
-              ignore_threshold = 0.2,
-              span = 11
-            )))
-            
-            n_peaks <- length(peaks)
-            if (n_peaks > 0) {
-              first_peak <- peaks[1]
-              last_peak  <- peaks[n_peaks]
-            }
-            
-            peak_day <- which.max(pheno$Predicted_Count)
-            
-            cp_mean <- cpt.mean(pheno$Predicted_Count, method = "PELT",
-                                penalty = "Manual", pen.value = 2)
-            cp_var  <- cpt.var(pheno$Predicted_Count, method = "PELT",
-                               penalty = "Manual", pen.value = 0.05)
-            
-            cps_mean <- cpts(cp_mean)
-            cps_var  <- cpts(cp_var)
-            
-            if (n_peaks > 0 && length(cps_mean) > 0 && !any(is.infinite(cps_mean))) {
-              onset_mean <- min(cps_mean)
-              offset_mean <- max(cps_mean)
-              flight_length_mean <- offset_mean - onset_mean + 1
-              
-              onset_var <- min(cps_var)
-              offset_var <- max(cps_var)
-              flight_length_var <- offset_var - onset_var + 1
-            }
+            onset_var <- min(cps_var)
+            offset_var <- max(cps_var)
+            flight_length_var <- offset_var - onset_var + 1
           }
           
         }, error = function(e) {
-          message("Error for ", id, " in ", YEAR, ": ", e$message)
+          message("Error for ", id, " / ", sp, " / ", yr, ": ", e$message)
         })
         
         phenology_estimates <- rbind(
           phenology_estimates,
           data.frame(
             ID = id,
-            YEAR = YEAR,
-            SPECIES = unique(sub_count_year$SPECIES),
+            YEAR = yr,
+            SPECIES = sp,
             SITE_ID = site,
+            ABUND_INDEX = abund_index,
             ONSET_mean = onset_mean,
             ONSET_var = onset_var,
             OFFSET_mean = offset_mean,
@@ -302,11 +325,7 @@ for (id in unique(m_count_filt$ID)) {
         )
       }
     }
-    
-    
   }
-  
-
 }
 #---
 
@@ -318,7 +337,7 @@ str(phenology_estimates)
 # Save as CSV inside project
 write.csv(
   phenology_estimates,
-  file = here("output", "pheno_estimates_allspp.csv"),
+  file = here("output", "pheno_abund_estimates_allspp.csv"),
   row.names = FALSE
 )
 #---
