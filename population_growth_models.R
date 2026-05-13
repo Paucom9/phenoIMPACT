@@ -29,7 +29,7 @@ library(writexl)
 #### Data import ####
 
 phenology_estimates <- read.csv(
-  here("output", "pheno_estimates_allspp.csv"),
+  here("output", "pheno_abund_estimates_allspp.csv"),
   sep = ",",
   dec = "."
 )
@@ -52,18 +52,49 @@ zscale <- function(x) {
   as.numeric(scale(x))
 }
 
+#### 0. Filter aberrant GAM-derived abundance indices ####
+
+# Exclude extreme GAM-derived abundance values
+# These likely correspond to unstable GAM fits producing unrealistic abundance indices
+
+abund_threshold <- quantile(
+  phenology_estimates$ABUND_INDEX,
+  probs = 0.999,
+  na.rm = TRUE
+)
+
+abund_threshold
+
+phenology_estimates_clean <- phenology_estimates |>
+  dplyr::filter(
+    !is.na(ABUND_INDEX),
+    ABUND_INDEX > 0,
+    ABUND_INDEX <= abund_threshold
+  )
+
+# Check how many rows are removed
+phenology_estimates |>
+  dplyr::summarise(
+    n_total = dplyr::n(),
+    n_removed = sum(
+      is.na(ABUND_INDEX) |
+        ABUND_INDEX <= 0 |
+        ABUND_INDEX > abund_threshold
+    ),
+    prop_removed = n_removed / n_total
+  )
+
+summary(phenology_estimates_clean$ABUND_INDEX)
+
+
 #### 1. Calculate annual population growth ####
 
-df_lambda <- phenology_estimates |>
+df_lambda <- phenology_estimates_clean |>
   dplyr::distinct(
     SPECIES,
     SITE_ID,
     YEAR,
     ABUND_INDEX
-  ) |>
-  dplyr::filter(
-    !is.na(ABUND_INDEX),
-    ABUND_INDEX > 0
   ) |>
   dplyr::mutate(
     YEAR = as.integer(YEAR),
@@ -88,6 +119,8 @@ df_lambda <- phenology_estimates |>
   )
 
 summary(df_lambda$lambda)
+summary(df_lambda$ABUND_INDEX)
+summary(exp(df_lambda$log_N_lag))
 
 #### 2. Prepare climate data ####
 
@@ -142,9 +175,8 @@ df_demo_onset <- df_lambda |>
     YEAR = as.factor(YEAR),
     pop_id = as.factor(pop_id),
     voltinism = as.factor(voltinism),
-    lambda_z = zscale(lambda),
     log_N_lag_z = zscale(log_N_lag),
-    clim_anomaly_z = zscale(clim_anomaly_tw60),
+    clim_anomaly_z = clim_anomaly_tw60,
     onset_plasticity_z = zscale(onset_advancement_plasticity_contextual)
   )
 
@@ -155,7 +187,7 @@ mod_lambda_onset <- lmer(
   lambda ~ log_N_lag_z +
     clim_anomaly_z * onset_plasticity_z +
     I(clim_anomaly_z^2) +
-    (1 | SPECIES) +
+    (1 + clim_anomaly_z | SPECIES) +
     (1 | SITE_ID) +
     (1 | YEAR),
   data = df_demo_onset,
@@ -200,7 +232,7 @@ df_demo_offset <- df_lambda |>
     pop_id = as.factor(pop_id),
     voltinism = as.factor(voltinism),
     log_N_lag_z = zscale(log_N_lag),
-    clim_anomaly_z = zscale(clim_anomaly_tw90),
+    clim_anomaly_z = clim_anomaly_tw90,
     offset_plasticity_z = zscale(offset_termination_plasticity_contextual)
   )
 
@@ -211,7 +243,7 @@ mod_lambda_offset <- lmer(
   lambda ~ log_N_lag_z +
     clim_anomaly_z * offset_plasticity_z +
     I(clim_anomaly_z^2) +
-    (1 | SPECIES) +
+    (1 + clim_anomaly_z | SPECIES) +
     (1 | SITE_ID) +
     (1 | YEAR),
   data = df_demo_offset,
@@ -232,7 +264,7 @@ mod_lambda_offset_voltinism <- lmer(
   lambda ~ log_N_lag_z +
     clim_anomaly_z * offset_plasticity_z * voltinism +
     I(clim_anomaly_z^2) +
-    (1 | SPECIES) +
+    (1 + clim_anomaly_z | SPECIES) +
     (1 | SITE_ID) +
     (1 | YEAR),
   data = df_demo_offset,
@@ -251,6 +283,7 @@ performance::check_convergence(mod_lambda_offset_voltinism)
 
 df_demo_offset_multi <- df_demo_offset |>
   dplyr::filter(voltinism == "multivoltine") |>
+  droplevels() |>
   dplyr::mutate(
     offset_delay_plasticity_z = zscale(offset_termination_plasticity_contextual)
   )
@@ -259,7 +292,7 @@ mod_lambda_offset_multi <- lmer(
   lambda ~ log_N_lag_z +
     clim_anomaly_z * offset_delay_plasticity_z +
     I(clim_anomaly_z^2) +
-    (1 | SPECIES) +
+    (1 + clim_anomaly_z | SPECIES) +
     (1 | SITE_ID) +
     (1 | YEAR),
   data = df_demo_offset_multi,
@@ -311,8 +344,8 @@ df_demo_full <- df_lambda |>
     pop_id = as.factor(pop_id),
     voltinism = as.factor(voltinism),
     log_N_lag_z = zscale(log_N_lag),
-    clim_anomaly_onset_z = zscale(clim_anomaly_tw60),
-    clim_anomaly_offset_z = zscale(clim_anomaly_tw90),
+    clim_anomaly_onset_z = clim_anomaly_tw60,
+    clim_anomaly_offset_z = clim_anomaly_tw90,
     onset_plasticity_z = zscale(onset_advancement_plasticity_contextual),
     offset_plasticity_z = zscale(offset_termination_plasticity_contextual)
   )
@@ -323,7 +356,7 @@ mod_lambda_full <- lmer(
     clim_anomaly_offset_z * offset_plasticity_z +
     I(clim_anomaly_onset_z^2) +
     I(clim_anomaly_offset_z^2) +
-    (1 | SPECIES) +
+    (1 + clim_anomaly_onset_z + clim_anomaly_offset_z || SPECIES) +
     (1 | SITE_ID) +
     (1 | YEAR),
   data = df_demo_full,
