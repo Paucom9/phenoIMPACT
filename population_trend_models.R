@@ -9,14 +9,13 @@
 #
 # Population trends are modelled directly from GAM-derived annual abundance indices:
 #
-# ABUND_INDEX ~ year * phenological plasticity
+# ABUND_INDEX ~ year_decade * onset plasticity + year_decade * offset plasticity
 #
 # Models use Gamma GLMMs with log link, appropriate for positive continuous abundance indices.
 #
 # Main models:
-#   1. Onset advancement plasticity
-#   2. Offset termination plasticity in univoltine populations
-#   3. Offset delay plasticity in multivoltine populations
+#   1. Combined onset advancement + offset termination plasticity in univoltine populations
+#   2. Combined onset advancement + offset delay plasticity in multivoltine populations
 # ============================================================================================ #
 
 rm(list = ls())
@@ -30,6 +29,9 @@ library(DHARMa)
 library(ggplot2)
 library(here)
 library(writexl)
+library(extrafont)
+library(performance)
+library(tibble)
 
 #### Data import ####
 
@@ -53,16 +55,11 @@ zscale <- function(x) {
 
 #### 0. Filter aberrant GAM-derived abundance indices ####
 
-# Exclude extreme GAM-derived abundance values
-# These likely correspond to unstable GAM fits producing unrealistic abundance indices
-
 abund_threshold <- quantile(
   phenology_estimates$ABUND_INDEX,
   probs = 0.999,
   na.rm = TRUE
 )
-
-abund_threshold
 
 phenology_estimates_clean <- phenology_estimates |>
   dplyr::filter(
@@ -70,8 +67,6 @@ phenology_estimates_clean <- phenology_estimates |>
     ABUND_INDEX > 0,
     ABUND_INDEX <= abund_threshold
   )
-
-# Check how many rows are removed
 
 abundance_filter_summary <- phenology_estimates |>
   dplyr::summarise(
@@ -89,10 +84,7 @@ summary(phenology_estimates_clean$ABUND_INDEX)
 
 #### 1. Prepare annual abundance dataset ####
 
-# For population trends we use all available annual abundance estimates.
-# We do not require consecutive years, because we are not calculating lambda.
-
-df_abund <- phenology_estimates_clean |>
+df_abund_raw <- phenology_estimates_clean |>
   dplyr::distinct(
     SPECIES,
     SITE_ID,
@@ -100,7 +92,7 @@ df_abund <- phenology_estimates_clean |>
     ABUND_INDEX
   ) |>
   dplyr::mutate(
-    YEAR = as.integer(YEAR),
+    year_num = as.integer(YEAR),
     SPECIES = as.character(SPECIES),
     SITE_ID = as.character(SITE_ID),
     pop_id = paste(SPECIES, SITE_ID, sep = "_")
@@ -108,93 +100,50 @@ df_abund <- phenology_estimates_clean |>
   dplyr::filter(
     !is.na(SPECIES),
     !is.na(SITE_ID),
-    !is.na(YEAR),
+    !is.na(year_num),
     !is.na(pop_id),
     !is.na(ABUND_INDEX),
     ABUND_INDEX > 0
-  ) |>
+  )
+
+year_center <- mean(df_abund_raw$year_num, na.rm = TRUE)
+
+df_abund <- df_abund_raw |>
   dplyr::mutate(
     log_abund_index = log(ABUND_INDEX),
-    year_z = zscale(YEAR),
+    year_decade = (year_num - year_center) / 10,
     SPECIES = as.factor(SPECIES),
     SITE_ID = as.factor(SITE_ID),
-    YEAR = as.factor(YEAR),
-    pop_id = as.factor(pop_id)
+    YEAR = as.factor(year_num),
+    pop_id = as.character(pop_id)
   )
 
 summary(df_abund$ABUND_INDEX)
 summary(df_abund$log_abund_index)
 
-#### 2. Onset advancement plasticity and population trends ####
-
-df_trend_onset <- df_abund |>
-  dplyr::left_join(
-    phenological_plasticity |>
-      dplyr::select(
-        pop_id,
-        voltinism,
-        onset_advancement_plasticity_contextual
-      ),
-    by = "pop_id"
-  ) |>
-  dplyr::filter(
-    !is.na(ABUND_INDEX),
-    !is.na(year_z),
-    !is.na(onset_advancement_plasticity_contextual),
-    !is.na(voltinism)
-  ) |>
-  dplyr::mutate(
-    voltinism = as.factor(voltinism),
-    onset_plasticity_z = zscale(onset_advancement_plasticity_contextual)
-  )
-
-summary(df_trend_onset$ABUND_INDEX)
-summary(df_trend_onset$onset_advancement_plasticity_contextual)
-summary(df_trend_onset$onset_plasticity_z)
-
-mod_trend_onset_gamma <- glmmTMB(
-  ABUND_INDEX ~ year_z * onset_plasticity_z +
-    (1 + year_z || SPECIES) +
-    (1 + year_z || SITE_ID),
-  data = df_trend_onset,
-  family = Gamma(link = "log")
-)
-
-summary(mod_trend_onset_gamma)
-
-#### 3. Offset plasticity and population trends ####
+#### 2. Prepare population-level plasticity dataset ####
 
 # Offset plasticity has different biological meanings depending on voltinism:
 #
 # Univoltine populations:
-#   warmer years may advance offset / terminate the flight period earlier.
-#   Therefore, higher biologically oriented plasticity = stronger advancement of offset.
+#   higher biological offset plasticity = stronger advancement / earlier termination.
 #
 # Multivoltine populations:
-#   warmer years may delay offset / extend the flight period.
-#   Therefore, higher biologically oriented plasticity = stronger delay of offset.
+#   higher biological offset plasticity = stronger delay / late-season extension.
 #
-# To make "high plasticity" biologically meaningful in both groups:
+# To make "high offset plasticity" biologically meaningful in both groups:
 #   univoltine   = -offset_termination_plasticity_contextual
 #   multivoltine =  offset_termination_plasticity_contextual
 
-df_trend_offset <- df_abund |>
-  dplyr::left_join(
-    phenological_plasticity |>
-      dplyr::select(
-        pop_id,
-        voltinism,
-        offset_termination_plasticity_contextual
-      ),
-    by = "pop_id"
-  ) |>
-  dplyr::filter(
-    !is.na(ABUND_INDEX),
-    !is.na(year_z),
-    !is.na(offset_termination_plasticity_contextual),
-    !is.na(voltinism)
+plasticity_pop <- phenological_plasticity |>
+  dplyr::select(
+    pop_id,
+    voltinism,
+    onset_advancement_plasticity_contextual,
+    offset_termination_plasticity_contextual
   ) |>
   dplyr::mutate(
+    pop_id = as.character(pop_id),
     voltinism = as.factor(voltinism),
     offset_plasticity_bio = dplyr::case_when(
       voltinism == "univoltine" ~ -offset_termination_plasticity_contextual,
@@ -203,141 +152,295 @@ df_trend_offset <- df_abund |>
     )
   ) |>
   dplyr::filter(
+    !is.na(pop_id),
+    !is.na(voltinism),
+    !is.na(onset_advancement_plasticity_contextual),
+    !is.na(offset_termination_plasticity_contextual),
     !is.na(offset_plasticity_bio)
+  ) |>
+  dplyr::distinct(
+    pop_id,
+    voltinism,
+    onset_advancement_plasticity_contextual,
+    offset_termination_plasticity_contextual,
+    offset_plasticity_bio
   ) |>
   dplyr::group_by(voltinism) |>
   dplyr::mutate(
+    onset_plasticity_z = zscale(onset_advancement_plasticity_contextual),
     offset_plasticity_bio_z = zscale(offset_plasticity_bio)
   ) |>
   dplyr::ungroup()
 
-offset_plasticity_summary <- df_trend_offset |>
+#### 3. Check correlation between onset and offset plasticity ####
+
+plasticity_correlations <- plasticity_pop |>
   dplyr::group_by(voltinism) |>
   dplyr::summarise(
-    n = dplyr::n(),
-    n_species = dplyr::n_distinct(SPECIES),
-    n_sites = dplyr::n_distinct(SITE_ID),
-    min_raw = min(offset_termination_plasticity_contextual, na.rm = TRUE),
-    mean_raw = mean(offset_termination_plasticity_contextual, na.rm = TRUE),
-    max_raw = max(offset_termination_plasticity_contextual, na.rm = TRUE),
-    min_bio = min(offset_plasticity_bio, na.rm = TRUE),
-    mean_bio = mean(offset_plasticity_bio, na.rm = TRUE),
-    max_bio = max(offset_plasticity_bio, na.rm = TRUE),
+    n_populations = dplyr::n(),
+    
+    pearson_raw = cor(
+      onset_advancement_plasticity_contextual,
+      offset_termination_plasticity_contextual,
+      use = "complete.obs",
+      method = "pearson"
+    ),
+    
+    spearman_raw = cor(
+      onset_advancement_plasticity_contextual,
+      offset_termination_plasticity_contextual,
+      use = "complete.obs",
+      method = "spearman"
+    ),
+    
+    pearson_bio = cor(
+      onset_advancement_plasticity_contextual,
+      offset_plasticity_bio,
+      use = "complete.obs",
+      method = "pearson"
+    ),
+    
+    spearman_bio = cor(
+      onset_advancement_plasticity_contextual,
+      offset_plasticity_bio,
+      use = "complete.obs",
+      method = "spearman"
+    ),
+    
     .groups = "drop"
   )
 
-offset_plasticity_summary
+plasticity_correlations
 
-#### 4. Univoltine offset model ####
+plot_plasticity_correlation <- ggplot(
+  plasticity_pop,
+  aes(
+    x = onset_plasticity_z,
+    y = offset_plasticity_bio_z
+  )
+) +
+  geom_point(alpha = 0.30) +
+  geom_smooth(method = "lm", se = TRUE) +
+  facet_wrap(~ voltinism) +
+  theme_classic(base_size = 15, base_family = "Garamond") +
+  labs(
+    x = "Onset advancement plasticity",
+    y = "Offset plasticity",
+    title = "Correlation between onset and offset plasticity"
+  )
 
-df_trend_offset_uni <- df_trend_offset |>
+plot_plasticity_correlation
+
+#### 4. Create combined trend dataset ####
+
+df_trend_combined <- df_abund |>
+  dplyr::left_join(
+    plasticity_pop,
+    by = "pop_id"
+  ) |>
+  dplyr::filter(
+    !is.na(ABUND_INDEX),
+    !is.na(year_decade),
+    !is.na(onset_plasticity_z),
+    !is.na(offset_plasticity_bio_z),
+    !is.na(voltinism)
+  ) |>
+  dplyr::mutate(
+    SPECIES = as.factor(SPECIES),
+    SITE_ID = as.factor(SITE_ID),
+    pop_id = as.factor(pop_id),
+    voltinism = as.factor(voltinism),
+        year_fac = factor(
+      year_num,
+      levels = min(year_num, na.rm = TRUE):max(year_num, na.rm = TRUE)
+    )
+  )
+
+combined_data_summary <- df_trend_combined |>
+  dplyr::group_by(voltinism) |>
+  dplyr::summarise(
+    n_observations = dplyr::n(),
+    n_populations = dplyr::n_distinct(pop_id),
+    n_species = dplyr::n_distinct(SPECIES),
+    n_sites = dplyr::n_distinct(SITE_ID),
+    min_year = min(year_num, na.rm = TRUE),
+    max_year = max(year_num, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+combined_data_summary
+
+#### 5. Split by voltinism ####
+
+df_trend_combined_uni <- df_trend_combined |>
   dplyr::filter(voltinism == "univoltine") |>
   droplevels()
 
-summary(df_trend_offset_uni$ABUND_INDEX)
-summary(df_trend_offset_uni$offset_plasticity_bio)
-summary(df_trend_offset_uni$offset_plasticity_bio_z)
-
-mod_trend_offset_uni_gamma <- glmmTMB(
-  ABUND_INDEX ~ year_z * offset_plasticity_bio_z +
-    (1 + year_z || SPECIES) +
-    (1 + year_z || SITE_ID),
-  data = df_trend_offset_uni,
-  family = Gamma(link = "log")
-)
-
-summary(mod_trend_offset_uni_gamma)
-
-#### 5. Multivoltine offset model ####
-
-df_trend_offset_multi <- df_trend_offset |>
+df_trend_combined_multi <- df_trend_combined |>
   dplyr::filter(voltinism == "multivoltine") |>
   droplevels()
 
-summary(df_trend_offset_multi$ABUND_INDEX)
-summary(df_trend_offset_multi$offset_plasticity_bio)
-summary(df_trend_offset_multi$offset_plasticity_bio_z)
+#### 6. Main model: univoltine populations ####
 
-mod_trend_offset_multi_gamma <- glmmTMB(
-  ABUND_INDEX ~ year_z * offset_plasticity_bio_z +
-    (1 + year_z || SPECIES) +
-    (1 + year_z || SITE_ID),
-  data = df_trend_offset_multi,
+mod_trend_combined_uni_gamma <- glmmTMB(
+  ABUND_INDEX ~
+    year_decade * onset_plasticity_z +
+    year_decade * offset_plasticity_bio_z +
+    (1 + year_decade || SPECIES) +
+    (1 + year_decade || SITE_ID) +
+    ar1(year_fac + 0 | pop_id),
+  data = df_trend_combined_uni,
   family = Gamma(link = "log")
 )
 
-summary(mod_trend_offset_multi_gamma)
+summary(mod_trend_combined_uni_gamma)
 
+#### 7. Main model: multivoltine populations ####
 
-#### 6. Function to plot relative abundance change from Gamma models ####
+mod_trend_combined_multi_gamma <- glmmTMB(
+  ABUND_INDEX ~
+    year_decade * onset_plasticity_z +
+    year_decade * offset_plasticity_bio_z +
+    (1 + year_decade || SPECIES) +
+    (1 + year_decade || SITE_ID) +
+    ar1(year_fac + 0 | pop_id),
+  data = df_trend_combined_multi,
+  family = Gamma(link = "log")
+)
+
+summary(mod_trend_combined_multi_gamma)
+
+#### 8. Check multicollinearity ####
+
+collinearity_uni <- performance::check_collinearity(mod_trend_combined_uni_gamma)
+collinearity_multi <- performance::check_collinearity(mod_trend_combined_multi_gamma)
+
+collinearity_uni
+collinearity_multi
+
+#### 9. Extract key model terms ####
+
+extract_key_terms <- function(model) {
+  
+  coef_tab <- as.data.frame(summary(model)$coefficients$cond)
+  
+  coef_tab |>
+    tibble::rownames_to_column("term") |>
+    dplyr::filter(
+      term %in% c(
+        "year_decade",
+        "onset_plasticity_z",
+        "offset_plasticity_bio_z",
+        "year_decade:onset_plasticity_z",
+        "year_decade:offset_plasticity_bio_z",
+        "onset_plasticity_z:year_decade",
+        "offset_plasticity_bio_z:year_decade"
+      )
+    ) |>
+    dplyr::mutate(
+      percent_change_per_decade = dplyr::if_else(
+        grepl("year_decade", term),
+        (exp(Estimate) - 1) * 100,
+        NA_real_
+      )
+    )
+}
+
+key_terms_uni <- extract_key_terms(mod_trend_combined_uni_gamma) |>
+  dplyr::mutate(model = "univoltine")
+
+key_terms_multi <- extract_key_terms(mod_trend_combined_multi_gamma) |>
+  dplyr::mutate(model = "multivoltine")
+
+key_terms_combined <- dplyr::bind_rows(
+  key_terms_uni,
+  key_terms_multi
+)
+
+key_terms_combined
+
+#### 10. Function to plot relative abundance change from Gamma models ####
+
+# This plots the effect of one plasticity variable while holding the other plasticity variable at its mean,
+# because both plasticity variables are z-scaled and therefore mean = 0.
 
 plot_gamma_percent_change <- function(model,
+                                      data,
                                       plasticity_var,
-                                      x_min = -2,
-                                      x_max = 2,
-                                      x_by = 0.1,
+                                      year_var = "year_decade",
+                                      year_num_var = "year_num",
+                                      year_center,
                                       title = NULL) {
   
   b <- glmmTMB::fixef(model)$cond
   V <- as.matrix(vcov(model)$cond)
   
-  interaction_name <- paste("year_z", plasticity_var, sep = ":")
+  interaction_name <- paste(year_var, plasticity_var, sep = ":")
   
   if (!interaction_name %in% names(b)) {
-    interaction_name <- paste(plasticity_var, "year_z", sep = ":")
+    interaction_name <- paste(plasticity_var, year_var, sep = ":")
   }
   
   if (!interaction_name %in% names(b)) {
-    stop("Could not find interaction term between year_z and plasticity variable.")
+    stop("Could not find interaction term.")
   }
   
-  x_vals <- seq(x_min, x_max, by = x_by)
-  plast_vals <- c(1, 0, -1)
-  x0 <- min(x_vals)
+  year_vals <- seq(
+    min(data[[year_num_var]], na.rm = TRUE),
+    max(data[[year_num_var]], na.rm = TRUE),
+    by = 1
+  )
   
-  pred <- expand.grid(
-    year_z = x_vals,
-    plasticity_z = plast_vals
+  year_df <- tibble::tibble(
+    year_num = year_vals
+  )
+  
+  year_df[[year_var]] <- (year_df$year_num - year_center) / 10
+  
+  x0 <- min(year_df[[year_var]], na.rm = TRUE)
+  
+  pred <- tidyr::expand_grid(
+    year_df,
+    plasticity_z = c(1, 0, -1)
   ) |>
     dplyr::mutate(
       group = factor(
         plasticity_z,
         levels = c(1, 0, -1),
-        labels = c("High", "Mean", "Low")
+        labels = c("High (+1 SD)", "Mean", "Low (-1 SD)")
       ),
-      delta_year = year_z - x0,
       
-      # Slope on the log scale
-      slope = b["year_z"] +
+      delta_year = .data[[year_var]] - x0,
+      
+      slope = b[year_var] +
         b[interaction_name] * plasticity_z,
       
-      # Relative change on the log scale
       log_rel = delta_year * slope,
       
-      # Uncertainty of the slope
       var_slope =
-        V["year_z", "year_z"] +
+        V[year_var, year_var] +
         plasticity_z^2 * V[interaction_name, interaction_name] +
-        2 * plasticity_z * V["year_z", interaction_name],
+        2 * plasticity_z * V[year_var, interaction_name],
       
       se_log_rel = abs(delta_year) * sqrt(var_slope),
       
-      low_log_rel = log_rel - 1.96 * se_log_rel,
+      low_log_rel  = log_rel - 1.96 * se_log_rel,
       high_log_rel = log_rel + 1.96 * se_log_rel,
       
-      # Convert to percent change
       percent_change = (exp(log_rel) - 1) * 100,
-      low_percent = (exp(low_log_rel) - 1) * 100,
-      high_percent = (exp(high_log_rel) - 1) * 100
-    )
+      low_percent    = (exp(low_log_rel) - 1) * 100,
+      high_percent   = (exp(high_log_rel) - 1) * 100
+    ) |>
+    dplyr::arrange(group, year_num)
   
-  p <- ggplot(
+  ggplot(
     pred,
     aes(
-      x = year_z,
+      x = year_num,
       y = percent_change,
       colour = group,
-      fill = group
+      fill = group,
+      group = group
     )
   ) +
     geom_hline(
@@ -355,92 +458,99 @@ plot_gamma_percent_change <- function(model,
     ) +
     geom_line(linewidth = 1.4) +
     scale_colour_manual(
-      breaks = c("High", "Mean", "Low"),
       values = c(
-        "High" = "#0072B2",
+        "High (+1 SD)" = "#0072B2",
         "Mean" = "#009E73",
-        "Low" = "#D55E00"
+        "Low (-1 SD)" = "#D55E00"
       )
     ) +
     scale_fill_manual(
-      breaks = c("High", "Mean", "Low"),
       values = c(
-        "High" = "#0072B2",
+        "High (+1 SD)" = "#0072B2",
         "Mean" = "#009E73",
-        "Low" = "#D55E00"
+        "Low (-1 SD)" = "#D55E00"
       )
     ) +
     labs(
-      x = "Year (standardized)",
+      x = "Year",
       y = "Relative change in abundance (%)",
       colour = "Plasticity",
       fill = "Plasticity",
       title = title
     ) +
     theme_classic(base_size = 15, base_family = "Garamond")
-  
-  return(p)
 }
 
-#### 7. Plot model effects ####
+#### 11. Plot model effects ####
 
-plot_trend_onset <- plot_gamma_percent_change(
-  model = mod_trend_onset_gamma,
+plot_trend_onset_uni <- plot_gamma_percent_change(
+  model = mod_trend_combined_uni_gamma,
+  data = df_trend_combined_uni,
   plasticity_var = "onset_plasticity_z",
-  title = "Onset advancement plasticity"
+  year_center = year_center,
+  title = "Onset advancement plasticity: univoltine populations"
 )
 
 plot_trend_offset_uni <- plot_gamma_percent_change(
-  model = mod_trend_offset_uni_gamma,
+  model = mod_trend_combined_uni_gamma,
+  data = df_trend_combined_uni,
   plasticity_var = "offset_plasticity_bio_z",
+  year_center = year_center,
   title = "Offset termination plasticity: univoltine populations"
 )
 
+plot_trend_onset_multi <- plot_gamma_percent_change(
+  model = mod_trend_combined_multi_gamma,
+  data = df_trend_combined_multi,
+  plasticity_var = "onset_plasticity_z",
+  year_center = year_center,
+  title = "Onset advancement plasticity: multivoltine populations"
+)
+
 plot_trend_offset_multi <- plot_gamma_percent_change(
-  model = mod_trend_offset_multi_gamma,
+  model = mod_trend_combined_multi_gamma,
+  data = df_trend_combined_multi,
   plasticity_var = "offset_plasticity_bio_z",
+  year_center = year_center,
   title = "Offset delay plasticity: multivoltine populations"
 )
 
-plot_trend_onset
+plot_trend_onset_uni
 plot_trend_offset_uni
+plot_trend_onset_multi
 plot_trend_offset_multi
 
-#### 8. Save outputs ####
+#### 12. Save outputs ####
 
-saveRDS(
-  mod_trend_onset_gamma,
-  here("output", "model_trend_onset_gamma.rds")
+dir.create(
+  here("output", "figures"),
+  recursive = TRUE,
+  showWarnings = FALSE
 )
 
 saveRDS(
-  mod_trend_offset_uni_gamma,
-  here("output", "model_trend_offset_univoltine_gamma.rds")
+  mod_trend_combined_uni_gamma,
+  here("output", "model_trend_combined_univoltine_gamma.rds")
 )
 
 saveRDS(
-  mod_trend_offset_multi_gamma,
-  here("output", "model_trend_offset_multivoltine_gamma.rds")
+  mod_trend_combined_multi_gamma,
+  here("output", "model_trend_combined_multivoltine_gamma.rds")
 )
 
 saveRDS(
-  res_trend_onset_gamma,
-  here("output", "diagnostics_trend_onset_gamma_DHARMa.rds")
+  collinearity_uni,
+  here("output", "collinearity_combined_univoltine.rds")
 )
 
 saveRDS(
-  res_trend_offset_uni_gamma,
-  here("output", "diagnostics_trend_offset_univoltine_gamma_DHARMa.rds")
-)
-
-saveRDS(
-  res_trend_offset_multi_gamma,
-  here("output", "diagnostics_trend_offset_multivoltine_gamma_DHARMa.rds")
+  collinearity_multi,
+  here("output", "collinearity_combined_multivoltine.rds")
 )
 
 ggsave(
-  filename = here("output", "figures", "plot_trend_onset_gamma.png"),
-  plot = plot_trend_onset,
+  filename = here("output", "figures", "plot_trend_onset_univoltine_gamma.png"),
+  plot = plot_trend_onset_uni,
   width = 7,
   height = 5,
   dpi = 300
@@ -455,6 +565,14 @@ ggsave(
 )
 
 ggsave(
+  filename = here("output", "figures", "plot_trend_onset_multivoltine_gamma.png"),
+  plot = plot_trend_onset_multi,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
   filename = here("output", "figures", "plot_trend_offset_multivoltine_gamma.png"),
   plot = plot_trend_offset_multi,
   width = 7,
@@ -462,33 +580,49 @@ ggsave(
   dpi = 300
 )
 
+ggsave(
+  filename = here("output", "figures", "plot_plasticity_correlation.png"),
+  plot = plot_plasticity_correlation,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+
 write.csv(
-  df_trend_onset,
-  here("output", "df_population_trend_onset.csv"),
+  df_trend_combined,
+  here("output", "df_population_trend_combined.csv"),
   row.names = FALSE
 )
 
 write.csv(
-  df_trend_offset,
-  here("output", "df_population_trend_offset.csv"),
+  plasticity_correlations,
+  here("output", "summary_plasticity_correlations.csv"),
   row.names = FALSE
 )
 
 write.csv(
-  offset_plasticity_summary,
-  here("output", "summary_offset_plasticity_by_voltinism.csv"),
+  combined_data_summary,
+  here("output", "summary_combined_population_trend_dataset.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  key_terms_combined,
+  here("output", "summary_combined_population_trend_model_terms.csv"),
   row.names = FALSE
 )
 
 writexl::write_xlsx(
   list(
     abundance_filter_summary = abundance_filter_summary,
+    combined_data_summary = combined_data_summary,
+    plasticity_correlations = plasticity_correlations,
+    key_terms_combined = key_terms_combined,
     df_abund = df_abund,
-    df_trend_onset = df_trend_onset,
-    df_trend_offset = df_trend_offset,
-    df_trend_offset_uni = df_trend_offset_uni,
-    df_trend_offset_multi = df_trend_offset_multi,
-    offset_plasticity_summary = offset_plasticity_summary
+    plasticity_pop = plasticity_pop,
+    df_trend_combined = df_trend_combined,
+    df_trend_combined_uni = df_trend_combined_uni,
+    df_trend_combined_multi = df_trend_combined_multi
   ),
-  here("output", "population_trend_model_datasets.xlsx")
+  here("output", "population_trend_combined_model_datasets.xlsx")
 )
