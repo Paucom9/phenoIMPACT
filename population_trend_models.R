@@ -459,15 +459,15 @@ plot_gamma_percent_change <- function(model,
     geom_line(linewidth = 1.4) +
     scale_colour_manual(
       values = c(
-        "High (+1 SD)" = "#0072B2",
-        "Mean" = "#009E73",
+        "High (+1 SD)" = "#009E73",
+        "Mean" = "#0072B2",
         "Low (-1 SD)" = "#D55E00"
       )
     ) +
     scale_fill_manual(
       values = c(
-        "High (+1 SD)" = "#0072B2",
-        "Mean" = "#009E73",
+        "High (+1 SD)" = "#009E73",
+        "Mean" = "#0072B2",
         "Low (-1 SD)" = "#D55E00"
       )
     ) +
@@ -520,6 +520,184 @@ plot_trend_offset_uni
 plot_trend_onset_multi
 plot_trend_offset_multi
 
+
+#### 12. Plot distribution population trends ####
+
+get_model_based_population_trends <- function(model, data, group_name) {
+  
+  b <- glmmTMB::fixef(model)$cond
+  
+  int_onset <- "year_decade:onset_plasticity_z"
+  if (!int_onset %in% names(b)) {
+    int_onset <- "onset_plasticity_z:year_decade"
+  }
+  
+  int_offset <- "year_decade:offset_plasticity_bio_z"
+  if (!int_offset %in% names(b)) {
+    int_offset <- "offset_plasticity_bio_z:year_decade"
+  }
+  
+  sp_re <- as.data.frame(glmmTMB::ranef(model)$cond$SPECIES) |>
+    tibble::rownames_to_column("SPECIES")
+  
+  site_re <- as.data.frame(glmmTMB::ranef(model)$cond$SITE_ID) |>
+    tibble::rownames_to_column("SITE_ID")
+  
+  sp_year_col <- grep("year_decade", names(sp_re), value = TRUE)[1]
+  site_year_col <- grep("year_decade", names(site_re), value = TRUE)[1]
+  
+  sp_re <- sp_re |>
+    dplyr::transmute(
+      SPECIES = as.character(SPECIES),
+      species_year_re = .data[[sp_year_col]]
+    )
+  
+  site_re <- site_re |>
+    dplyr::transmute(
+      SITE_ID = as.character(SITE_ID),
+      site_year_re = .data[[site_year_col]]
+    )
+  
+  data |>
+    dplyr::distinct(
+      pop_id,
+      SPECIES,
+      SITE_ID,
+      onset_plasticity_z,
+      offset_plasticity_bio_z
+    ) |>
+    dplyr::mutate(
+      SPECIES = as.character(SPECIES),
+      SITE_ID = as.character(SITE_ID)
+    ) |>
+    dplyr::left_join(sp_re, by = "SPECIES") |>
+    dplyr::left_join(site_re, by = "SITE_ID") |>
+    dplyr::mutate(
+      voltinism = group_name,
+      
+      beta_log_per_decade =
+        b["year_decade"] +
+        b[int_onset] * onset_plasticity_z +
+        b[int_offset] * offset_plasticity_bio_z +
+        dplyr::coalesce(species_year_re, 0) +
+        dplyr::coalesce(site_year_re, 0),
+      
+      trend_percent_decade =
+        (exp(beta_log_per_decade) - 1) * 100
+    )
+}
+
+model_trends_uni <- get_model_based_population_trends(
+  model = mod_trend_combined_uni_gamma,
+  data = df_trend_combined_uni,
+  group_name = "univoltine"
+)
+
+model_trends_multi <- get_model_based_population_trends(
+  model = mod_trend_combined_multi_gamma,
+  data = df_trend_combined_multi,
+  group_name = "multivoltine"
+)
+
+model_trends <- dplyr::bind_rows(
+  model_trends_uni,
+  model_trends_multi
+)
+
+model_trends |>
+  dplyr::group_by(voltinism) |>
+  dplyr::summarise(
+    n_populations = dplyr::n(),
+    mean_trend = mean(trend_percent_decade, na.rm = TRUE),
+    median_trend = median(trend_percent_decade, na.rm = TRUE),
+    q25 = quantile(trend_percent_decade, 0.25, na.rm = TRUE),
+    q75 = quantile(trend_percent_decade, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+model_trends <- model_trends |>
+  dplyr::mutate(
+    voltinism = dplyr::case_when(
+      voltinism == "univoltine" ~ "Univoltine",
+      voltinism == "multivoltine" ~ "Multivoltine",
+      TRUE ~ as.character(voltinism)
+    )
+  )
+
+trend_summary <- model_trends |>
+  dplyr::group_by(voltinism) |>
+  dplyr::summarise(
+    median_trend = median(trend_percent_decade, na.rm = TRUE),
+    prop_positive = mean(trend_percent_decade > 0, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+xlims <- quantile(
+  model_trends$trend_percent_decade,
+  probs = c(0.01, 0.99),
+  na.rm = TRUE
+)
+
+plot_model_trend_hist_overlap <- ggplot(
+  model_trends,
+  aes(
+    x = trend_percent_decade,
+    fill = voltinism,
+    colour = voltinism
+  )
+) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    binwidth = 5,
+    position = "identity",
+    alpha = 0.35,
+    colour = "white"
+  ) +
+  geom_density(
+    linewidth = 1.1,
+    alpha = 0
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    colour = "grey30"
+  ) +
+  geom_vline(
+    data = trend_summary,
+    aes(xintercept = median_trend, colour = voltinism),
+    linewidth = 1.1,
+    linetype = "dashed"
+  ) +
+  coord_cartesian(xlim = xlims) +
+  scale_colour_manual(
+    breaks = c("Univoltine", "Multivoltine"),
+    values = c(
+      "Univoltine" = "#2F5D62",
+      "Multivoltine" = "#B85C38"
+    )
+  ) +
+  scale_fill_manual(
+    breaks = c("Univoltine", "Multivoltine"),
+    values = c(
+      "Univoltine" = "#2F5D62",
+      "Multivoltine" = "#B85C38"
+    )
+  ) +
+  theme_classic(base_size = 15, base_family = "Garamond") +
+  labs(
+    x = "Abundance change (% per decade)",
+    y = "Density",
+    colour = "",
+    fill = "",
+    title = ""
+  ) +
+  theme(
+    legend.position = "top"
+  )
+  
+
+plot_model_trend_hist_overlap
+
 #### 12. Save outputs ####
 
 dir.create(
@@ -546,6 +724,15 @@ saveRDS(
 saveRDS(
   collinearity_multi,
   here("output", "collinearity_combined_multivoltine.rds")
+)
+
+
+ggsave(
+  filename = here("output", "figures", "plot_density_pop_trends_univol_multivol.png"),
+  plot = plot_model_trend_hist_overlap,
+  width = 7,
+  height = 5,
+  dpi = 300
 )
 
 ggsave(
