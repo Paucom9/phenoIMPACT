@@ -212,6 +212,52 @@ plasticity_correlations <- plasticity_pop |>
 
 plasticity_correlations
 
+cor_labels <- plasticity_pop |>
+  dplyr::group_by(voltinism) |>
+  dplyr::summarise(
+    n = sum(!is.na(onset_plasticity_z) & !is.na(offset_plasticity_bio_z)),
+    pearson = cor(
+      onset_plasticity_z,
+      offset_plasticity_bio_z,
+      use = "complete.obs",
+      method = "pearson"
+    ),
+    spearman = cor(
+      onset_plasticity_z,
+      offset_plasticity_bio_z,
+      use = "complete.obs",
+      method = "spearman"
+    ),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    label = paste0(
+      "Pearson r = ", round(pearson, 2),
+      "\nSpearman ρ = ", round(spearman, 2),
+      "\nN = ", n
+    )
+  )
+
+plasticity_pop <- plasticity_pop |>
+  dplyr::mutate(
+    voltinism = dplyr::recode(
+      voltinism,
+      "univoltine" = "Univoltine",
+      "multivoltine" = "Multivoltine"
+    ),
+    voltinism = factor(voltinism, levels = c("Univoltine", "Multivoltine"))
+  )
+
+cor_labels <- cor_labels |>
+  dplyr::mutate(
+    voltinism = dplyr::recode(
+      voltinism,
+      "univoltine" = "Univoltine",
+      "multivoltine" = "Multivoltine"
+    ),
+    voltinism = factor(voltinism, levels = c("Univoltine", "Multivoltine"))
+  )
+
 plot_plasticity_correlation <- ggplot(
   plasticity_pop,
   aes(
@@ -221,15 +267,29 @@ plot_plasticity_correlation <- ggplot(
 ) +
   geom_point(alpha = 0.30) +
   geom_smooth(method = "lm", se = TRUE) +
+  geom_text(
+    data = cor_labels,
+    aes(
+      x = -Inf,
+      y = Inf,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    hjust = -0.05,
+    vjust = 1.2,
+    size = 4.5,
+    family = "Garamond"
+  ) +
   facet_wrap(~ voltinism) +
   theme_classic(base_size = 15, base_family = "Garamond") +
   labs(
-    x = "Onset advancement plasticity",
+    x = "Onset plasticity",
     y = "Offset plasticity",
-    title = "Correlation between onset and offset plasticity"
+    title = ""
   )
 
 plot_plasticity_correlation
+
 
 #### 4. Create combined trend dataset ####
 
