@@ -128,6 +128,249 @@ head(m_count_filt)
 m_count_filt[, uniqueN(SITE_ID), by = bms_id][order(-V1)]
 # ---
 
+##### Sampling support / data quality after site filtering #####
+
+# Prepare dates
+m_visit_filt[, DATE := as.Date(DATE)]
+m_count_filt[, DATE := as.Date(DATE)]
+
+m_visit_filt[, visit_doy := lubridate::yday(DATE)]
+m_count_filt[, obs_doy := lubridate::yday(DATE)]
+
+# Unique site-year visit dates
+visit_dates_sy <- unique(
+  m_visit_filt[, .(
+    SITE_ID,
+    year,
+    bms_id,
+    visit_id,
+    DATE,
+    visit_doy
+  )]
+)
+
+# Site-year visit summary
+visit_summary_sy <- visit_dates_sy[
+  , .(
+    n_visits_site_year = uniqueN(visit_id),
+    first_visit_doy = min(visit_doy, na.rm = TRUE),
+    last_visit_doy  = max(visit_doy, na.rm = TRUE)
+  ),
+  by = .(SITE_ID, year, bms_id)
+]
+
+# Species-site-year positive observation summary
+obs_summary_ssy <- m_count_filt[
+  !is.na(COUNT) & COUNT > 0,
+  .(
+    n_positive_dates = uniqueN(DATE),
+    first_obs_doy = min(obs_doy, na.rm = TRUE),
+    last_obs_doy  = max(obs_doy, na.rm = TRUE)
+  ),
+  by = .(ID, SPECIES, SITE_ID, year, bms_id)
+]
+
+# Keep the same species-site-year candidates that enter the GAM loop:
+# ≥3 positive dates and ≥10 site-year visits
+sampling_support_ssy <- obs_summary_ssy |>
+  as.data.frame() |>
+  dplyr::left_join(
+    visit_summary_sy |>
+      as.data.frame() |>
+      dplyr::select(
+        SITE_ID,
+        year,
+        n_visits_site_year,
+        first_visit_doy,
+        last_visit_doy
+      ),
+    by = c("SITE_ID", "year")
+  ) |>
+  dplyr::filter(
+    n_positive_dates >= 3,
+    n_visits_site_year >= 10
+  )
+
+# Count real zero visits before first observation and after last observation
+zero_support_ssy <- sampling_support_ssy |>
+  dplyr::select(
+    ID,
+    SPECIES,
+    SITE_ID,
+    year,
+    first_obs_doy,
+    last_obs_doy
+  ) |>
+  dplyr::left_join(
+    visit_dates_sy |>
+      as.data.frame() |>
+      dplyr::select(
+        SITE_ID,
+        year,
+        visit_id,
+        visit_doy
+      ),
+    by = c("SITE_ID", "year")
+  ) |>
+  dplyr::group_by(ID, SPECIES, SITE_ID, year) |>
+  dplyr::summarise(
+    n_zero_visits_before_first_obs =
+      dplyr::n_distinct(visit_id[visit_doy < first_obs_doy]),
+    
+    n_zero_visits_after_last_obs =
+      dplyr::n_distinct(visit_id[visit_doy > last_obs_doy]),
+    
+    .groups = "drop"
+  )
+
+sampling_support_ssy <- sampling_support_ssy |>
+  dplyr::left_join(
+    zero_support_ssy,
+    by = c("ID", "SPECIES", "SITE_ID", "year")
+  ) |>
+  dplyr::mutate(
+    gap_first_visit_first_obs = first_obs_doy - first_visit_doy,
+    gap_last_obs_last_visit = last_visit_doy - last_obs_doy,
+    
+    has_zero_before_first_obs =
+      n_zero_visits_before_first_obs >= 1,
+    
+    has_zero_after_last_obs =
+      n_zero_visits_after_last_obs >= 1,
+    
+    has_zero_before_and_after =
+      has_zero_before_first_obs & has_zero_after_last_obs
+  )
+
+# Quick inspection
+sampling_quality_summary <- sampling_support_ssy |>
+  dplyr::summarise(
+    n_species_site_year = dplyr::n(),
+    
+    mean_n_visits_site_year =
+      mean(n_visits_site_year, na.rm = TRUE),
+    
+    mean_n_positive_dates =
+      mean(n_positive_dates, na.rm = TRUE),
+    
+    mean_zero_visits_before_first_obs =
+      mean(n_zero_visits_before_first_obs, na.rm = TRUE),
+    
+    mean_zero_visits_after_last_obs =
+      mean(n_zero_visits_after_last_obs, na.rm = TRUE),
+    
+    median_gap_first_visit_first_obs =
+      median(gap_first_visit_first_obs, na.rm = TRUE),
+    
+    median_gap_last_obs_last_visit =
+      median(gap_last_obs_last_visit, na.rm = TRUE),
+    
+    prop_has_zero_before_first_obs =
+      mean(has_zero_before_first_obs, na.rm = TRUE),
+    
+    prop_has_zero_after_last_obs =
+      mean(has_zero_after_last_obs, na.rm = TRUE),
+    
+    prop_has_zero_before_and_after =
+      mean(has_zero_before_and_after, na.rm = TRUE)
+  )
+
+sampling_quality_by_bms <- sampling_support_ssy |>
+  dplyr::group_by(bms_id) |>
+  dplyr::summarise(
+    n_species_site_year = dplyr::n(),
+    
+    mean_n_visits_site_year =
+      mean(n_visits_site_year, na.rm = TRUE),
+    
+    mean_n_positive_dates =
+      mean(n_positive_dates, na.rm = TRUE),
+    
+    prop_has_zero_before_first_obs =
+      mean(has_zero_before_first_obs, na.rm = TRUE),
+    
+    prop_has_zero_after_last_obs =
+      mean(has_zero_after_last_obs, na.rm = TRUE),
+    
+    prop_has_zero_before_and_after =
+      mean(has_zero_before_and_after, na.rm = TRUE),
+    
+    median_gap_first_visit_first_obs =
+      median(gap_first_visit_first_obs, na.rm = TRUE),
+    
+    median_gap_last_obs_last_visit =
+      median(gap_last_obs_last_visit, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(desc(n_species_site_year))
+
+sampling_quality_by_year <- sampling_support_ssy |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    n_species_site_year = dplyr::n(),
+    
+    prop_has_zero_before_first_obs =
+      mean(has_zero_before_first_obs, na.rm = TRUE),
+    
+    prop_has_zero_after_last_obs =
+      mean(has_zero_after_last_obs, na.rm = TRUE),
+    
+    prop_has_zero_before_and_after =
+      mean(has_zero_before_and_after, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+sampling_quality_summary |>
+  tibble::as_tibble() |>
+  print(n = Inf, width = Inf)
+sampling_quality_by_bms |>
+  tibble::as_tibble() |>
+  print(n = Inf, width = Inf)
+sampling_quality_by_year |>
+  tibble::as_tibble() |>
+  print(n = Inf, width = Inf)
+
+##### Save sampling support in phenology_estimates format #####
+
+phenology_sampling_support <- sampling_support_ssy |>
+  dplyr::mutate(
+    YEAR = as.integer(as.character(year)),
+    ID = as.character(ID),
+    SPECIES = as.character(SPECIES),
+    SITE_ID = as.character(SITE_ID)
+  ) |>
+  dplyr::select(
+    ID,
+    YEAR,
+    SPECIES,
+    SITE_ID,
+    bms_id,
+    n_visits_site_year,
+    n_positive_dates,
+    first_visit_doy,
+    last_visit_doy,
+    first_obs_doy,
+    last_obs_doy,
+    n_zero_visits_before_first_obs,
+    n_zero_visits_after_last_obs,
+    gap_first_visit_first_obs,
+    gap_last_obs_last_visit,
+    has_zero_before_first_obs,
+    has_zero_after_last_obs,
+    has_zero_before_and_after
+  )
+
+head(phenology_sampling_support)
+str(phenology_sampling_support)
+
+write.csv(
+  phenology_sampling_support,
+  file = here("output", "phenology_sampling_support_allspp.csv"),
+  row.names = FALSE
+)
+
 
 ##### Functions #####
 
@@ -201,7 +444,10 @@ for (id in unique(m_count_filt$ID)) {
       abund_index <- NA
       
       # Require ≥3 weeks with records and ≥10 visits
-      if (uniqueN(as.Date(sub_count_year$DATE)) >= 3 & nrow(sub_visit) >= 10) {
+      if (
+        uniqueN(as.Date(sub_count_year$DATE)) >= 3 &
+        data.table::uniqueN(sub_visit$visit_id) >= 10
+      ) {
         
         # Zero-fill missing visits within the monitoring season
         missing_dates <- sub_visit[!DATE %in% sub_count_year$DATE]
