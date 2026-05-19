@@ -47,6 +47,17 @@ phenological_plasticity <- read.csv(
   dec = "."
 )
 
+stopifnot(all(c(
+  "pop_id",
+  "voltinism",
+  "onset_advancement_plasticity_contextual",
+  "offset_termination_plasticity_contextual"
+) %in% names(phenological_plasticity)))
+
+phenological_plasticity |>
+  dplyr::count(voltinism)
+
+
 #### Helper functions ####
 
 zscale <- function(x) {
@@ -333,11 +344,11 @@ combined_data_summary
 #### 5. Split by voltinism ####
 
 df_trend_combined_uni <- df_trend_combined |>
-  dplyr::filter(voltinism == "univoltine") |>
+  dplyr::filter(voltinism == "Univoltine") |>
   droplevels()
 
 df_trend_combined_multi <- df_trend_combined |>
-  dplyr::filter(voltinism == "multivoltine") |>
+  dplyr::filter(voltinism == "Multivoltine") |>
   droplevels()
 
 #### 6. Main model: univoltine populations ####
@@ -377,6 +388,7 @@ collinearity_multi <- performance::check_collinearity(mod_trend_combined_multi_g
 
 collinearity_uni
 collinearity_multi
+
 
 #### 9. Extract key model terms ####
 
@@ -419,7 +431,75 @@ key_terms_combined <- dplyr::bind_rows(
 
 key_terms_combined
 
-#### 10. Function to plot relative abundance change from Gamma models ####
+#### 10. Likelihood ratio tests for key interactions ####
+
+get_lrt_glmmTMB_interaction <- function(full_model, interaction_term) {
+  
+  reduced_model <- update(
+    full_model,
+    as.formula(paste(". ~ . -", interaction_term))
+  )
+  
+  lrt <- anova(reduced_model, full_model)
+  
+  data.frame(
+    interaction = interaction_term,
+    Chisq = lrt$Chisq[2],
+    LRT_df = lrt$`Chi Df`[2],
+    p_LRT = lrt$`Pr(>Chisq)`[2],
+    AIC_reduced = AIC(reduced_model),
+    AIC_full = AIC(full_model),
+    delta_AIC = AIC(reduced_model) - AIC(full_model),
+    BIC_reduced = BIC(reduced_model),
+    BIC_full = BIC(full_model),
+    delta_BIC = BIC(reduced_model) - BIC(full_model)
+  )
+}
+
+lrt_uni_onset <- get_lrt_glmmTMB_interaction(
+  full_model = mod_trend_combined_uni_gamma,
+  interaction_term = "year_decade:onset_plasticity_z"
+)
+
+lrt_uni_offset <- get_lrt_glmmTMB_interaction(
+  full_model = mod_trend_combined_uni_gamma,
+  interaction_term = "year_decade:offset_plasticity_bio_z"
+)
+
+lrt_multi_onset <- get_lrt_glmmTMB_interaction(
+  full_model = mod_trend_combined_multi_gamma,
+  interaction_term = "year_decade:onset_plasticity_z"
+)
+
+lrt_multi_offset <- get_lrt_glmmTMB_interaction(
+  full_model = mod_trend_combined_multi_gamma,
+  interaction_term = "year_decade:offset_plasticity_bio_z"
+)
+
+lrt_population_trends <- dplyr::bind_rows(
+  lrt_uni_onset |> dplyr::mutate(voltinism = "Univoltine", plasticity = "Onset advancement"),
+  lrt_uni_offset |> dplyr::mutate(voltinism = "Univoltine", plasticity = "Offset termination"),
+  lrt_multi_onset |> dplyr::mutate(voltinism = "Multivoltine", plasticity = "Onset advancement"),
+  lrt_multi_offset |> dplyr::mutate(voltinism = "Multivoltine", plasticity = "Offset delay")
+) |>
+  dplyr::select(
+    voltinism,
+    plasticity,
+    interaction,
+    Chisq,
+    LRT_df,
+    p_LRT,
+    delta_AIC,
+    delta_BIC,
+    AIC_reduced,
+    AIC_full,
+    BIC_reduced,
+    BIC_full
+  )
+
+lrt_population_trends
+
+#### 11. Function to plot relative abundance change from Gamma models ####
 
 # This plots the effect of one plasticity variable while holding the other plasticity variable at its mean,
 # because both plasticity variables are z-scaled and therefore mean = 0.
@@ -541,14 +621,14 @@ plot_gamma_percent_change <- function(model,
     theme_classic(base_size = 15, base_family = "Garamond")
 }
 
-#### 11. Plot model effects ####
+#### 12. Plot model effects ####
 
 plot_trend_onset_uni <- plot_gamma_percent_change(
   model = mod_trend_combined_uni_gamma,
   data = df_trend_combined_uni,
   plasticity_var = "onset_plasticity_z",
   year_center = year_center,
-  title = "Onset advancement plasticity: univoltine populations"
+  title = "Emergence plasticity: univoltine populations"
 )
 
 plot_trend_offset_uni <- plot_gamma_percent_change(
@@ -556,7 +636,7 @@ plot_trend_offset_uni <- plot_gamma_percent_change(
   data = df_trend_combined_uni,
   plasticity_var = "offset_plasticity_bio_z",
   year_center = year_center,
-  title = "Offset termination plasticity: univoltine populations"
+  title = "Offset advancement plasticity: univoltine populations"
 )
 
 plot_trend_onset_multi <- plot_gamma_percent_change(
@@ -581,7 +661,7 @@ plot_trend_onset_multi
 plot_trend_offset_multi
 
 
-#### 12. Plot distribution population trends ####
+#### 13. Plot distribution population trends ####
 
 get_model_based_population_trends <- function(model, data, group_name) {
   
@@ -758,7 +838,7 @@ plot_model_trend_hist_overlap <- ggplot(
 
 plot_model_trend_hist_overlap
 
-#### 12. Save outputs ####
+#### 14. Save outputs ####
 
 dir.create(
   here("output", "figures"),
@@ -859,12 +939,19 @@ write.csv(
   row.names = FALSE
 )
 
+write.csv(
+  lrt_population_trends,
+  here("output", "summary_population_trend_LRTs.csv"),
+  row.names = FALSE
+)
+
 writexl::write_xlsx(
   list(
     abundance_filter_summary = abundance_filter_summary,
     combined_data_summary = combined_data_summary,
     plasticity_correlations = plasticity_correlations,
     key_terms_combined = key_terms_combined,
+    lrt_population_trends = lrt_population_trends,
     df_abund = df_abund,
     plasticity_pop = plasticity_pop,
     df_trend_combined = df_trend_combined,
@@ -873,3 +960,4 @@ writexl::write_xlsx(
   ),
   here("output", "population_trend_combined_model_datasets.xlsx")
 )
+
