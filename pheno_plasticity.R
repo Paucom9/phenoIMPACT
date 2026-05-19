@@ -260,311 +260,457 @@ ggsave(
   dpi = 300
 )
 
-# ---------------------------------------------------------------------------- #
-#### Onset (mean) #### 
 
-df_onset_mean <- subset(df, df$pheno_type == "ONSET_mean")
-
-# Anomaly time-window selection # 
-
-mod_30 <- lmer(
-  ONSET_mean ~ clim_anomaly_tw30 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw30 | SPECIES),
-  data = df_onset_mean, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_60 <- lmer(
-  ONSET_mean ~ clim_anomaly_tw60 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw60 | SPECIES),
-  data = df_onset_mean, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_90 <- lmer(
-  ONSET_mean ~ clim_anomaly_tw90 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw90 | SPECIES),
-  data = df_onset_mean, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-AIC(mod_30, mod_60, mod_90) ### Best time-window is 60 days before onset
-summary(mod_30)
-summary(mod_60)
-summary(mod_90)
-fixef(mod_30)["clim_anomaly_tw30"]
-fixef(mod_60)["clim_anomaly_tw60"]
-fixef(mod_90)["clim_anomaly_tw90"]
-
-
-# Plot effects
-
-extract_effect <- function(mod, var, label) {
-  tidy(mod) %>%
-    filter(term == var) %>%
-    mutate(window = label)
-}
-
-df_eff <- bind_rows(
-  extract_effect(mod_30, "clim_anomaly_tw30", "30 days"),
-  extract_effect(mod_60, "clim_anomaly_tw60", "60 days"),
-  extract_effect(mod_90, "clim_anomaly_tw90", "90 days")
-) %>%
-  mutate(
-    lower = estimate - 1.96 * std.error,
-    upper = estimate + 1.96 * std.error
-  )
-
-ggplot(df_eff, aes(x = window, y = estimate)) +
-  
-  geom_point(size = 3) +
-  
-  geom_errorbar(aes(ymin = lower, ymax = upper),
-                width = 0.1) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  
-  theme_classic(base_family = "Garamond") +
-  
-  labs(
-    x = "Time window",
-    y = "Phenological sensitivity\n(slope of onset vs temperature anomaly)"
-  )
-
-make_pred <- function(mod, var, label) {
-  
-  newdat <- data.frame(
-    anomaly = seq(-2, 2, length.out = 100)
-  )
-  
-  names(newdat) <- var
-  
-  pred <- predict(
-    mod,
-    newdata = newdat,
-    re.form = NA,   # important!
-    se.fit = TRUE
-  )
-  
-  data.frame(
-    anomaly = newdat[[var]],
-    fit = pred$fit,
-    se = pred$se.fit,
-    window = label
-  )
-}
-
-df_pred <- dplyr::bind_rows(
-  make_pred(mod_30, "clim_anomaly_tw30", "30 days"),
-  make_pred(mod_60, "clim_anomaly_tw60", "60 days"),
-  make_pred(mod_90, "clim_anomaly_tw90", "90 days")
-)
-
-df_pred <- df_pred %>%
-  dplyr::mutate(
-    lower = fit - 1.96 * se,
-    upper = fit + 1.96 * se
-  )
-
-tw_onset_preds <- ggplot(df_pred, aes(anomaly, fit,
-                                      color = window,
-                                      fill = window)) +
-  
-  geom_line(size = 1.2) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.2, color = NA) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Temperature anomaly",
-    y = "Predicted onset",
-    color = "Time window",
-    fill = "Time window"
-  )
-
-tw_onset_preds
-
-ggsave(
-  filename = here("output", "figures", "tw_onset_preds.png"),
-  plot = tw_onset_preds,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
+#### Functions for phenological plasticity analysis ####
 
 # ---------------------------------------------------------------------------- #
-# Model selection #
+# Helper functions
+# ---------------------------------------------------------------------------- #
 
-d_o_m <- df_onset_mean %>%
-  dplyr::filter(
-    !is.na(ONSET_mean),
-    !is.na(clim_anomaly_tw60),
-    !is.na(photo_tw60),
-    !is.na(clim_background_tw60),
-    !is.na(clim_predictability_tw60),
-    !is.na(clim_autocorr_tw60),
-    !is.na(clim_trend_tw60)
-  )
-
-global_mod_o_m <- lmer(
-  ONSET_mean ~ clim_anomaly_tw60 *
-    (photo_tw60 +
-       clim_background_tw60 +
-       clim_predictability_tw60 +
-       clim_autocorr_tw60 +
-       clim_trend_tw60) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw60 | SPECIES),
-  data = d_o_m, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-options(na.action = "na.fail")
-
-dd_o_m <- dredge(
-  global_mod_o_m,
-  fixed = "clim_anomaly_tw60",
-  subset =
-    dc("photo_tw60", "clim_anomaly_tw60:photo_tw60") &
-    dc("clim_background_tw60", "clim_anomaly_tw60:clim_background_tw60") &
-    dc("clim_predictability_tw60", "clim_anomaly_tw60:clim_predictability_tw60") &
-    dc("clim_autocorr_tw60", "clim_anomaly_tw60:clim_autocorr_tw60") &
-    dc("clim_trend_tw60", "clim_anomaly_tw60:clim_trend_tw60")
-)
-
-model.sel(dd_o_m)
-
-best_mod_o_m <- get.models(dd_o_m, subset = 1)[[1]]
-summary(best_mod_o_m)
-check_collinearity(best_mod_o_m)
-
-# --- all models ---
-ms_o_m <- model.sel(dd_o_m)
-
-all_models_o_m <- as.data.frame(ms_o_m)
-
-# --- stars function ---
-stars <- function(p) {
-  ifelse(p < 0.001, "***",
-         ifelse(p < 0.01, "**",
-                ifelse(p < 0.05, "*", "")))
-}
-
-# --- p-values from best model ---
-pvals <- summary(best_mod_o_m)$coefficients[, "Pr(>|t|)"]
-
-# --- clean table ---
-fmt <- function(x, pvals, name) {
+get_vars_window <- function(window, include_autocorr = FALSE) {
   
-  p <- pvals[name]
+  vars <- c(
+    paste0("clim_anomaly_tw", window),
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_predictability_tw", window),
+    paste0("clim_trend_tw", window)
+  )
   
-  if (is.na(p) && grepl(":", name)) {
-    parts <- strsplit(name, ":")[[1]]
-    alt_name <- paste0(parts[2], ":", parts[1])
-    if (alt_name %in% names(pvals)) {
-      p <- pvals[alt_name]
-    }
+  if (include_autocorr) {
+    vars <- c(vars, paste0("clim_autocorr_tw", window))
   }
   
-  ifelse(
-    is.na(x),
-    "—",
-    paste0(
-      round(x, 2),
-      ifelse(!is.na(p), stars(p), "")
+  vars
+}
+
+get_moderators_window <- function(window, include_autocorr = FALSE) {
+  
+  mods <- c(
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_predictability_tw", window),
+    paste0("clim_trend_tw", window)
+  )
+  
+  if (include_autocorr) {
+    mods <- c(mods, paste0("clim_autocorr_tw", window))
+  }
+  
+  mods
+}
+
+fit_lmer_model <- function(formula, data) {
+  
+  lmer(
+    formula,
+    data = data,
+    REML = FALSE,
+    control = lmerControl(
+      optimizer = "bobyqa",
+      optCtrl = list(maxfun = 2e6)
     )
   )
 }
 
-table_clean_o_m <- all_models_o_m %>%
-  transmute(
-    delta = round(delta, 2),
-    weight = signif(weight, 2),
-    
-    Plasticity = fmt(clim_anomaly_tw60, pvals, "clim_anomaly_tw60"),
-    Photoperiod = fmt(photo_tw60, pvals, "photo_tw60"),
-    Background = fmt(clim_background_tw60, pvals, "clim_background_tw60"),
-    Predictability = fmt(clim_predictability_tw60, pvals, "clim_predictability_tw60"),
-    Autocorrelation = fmt(clim_autocorr_tw60, pvals, "clim_autocorr_tw60"),
-    Trend = fmt(clim_trend_tw60, pvals, "clim_trend_tw60"),
-    
-    `Plast×Photo` = fmt(`clim_anomaly_tw60:photo_tw60`, pvals, "clim_anomaly_tw60:photo_tw60"),
-    `Plast×Background` = fmt(`clim_anomaly_tw60:clim_background_tw60`, pvals, "clim_anomaly_tw60:clim_background_tw60"),
-    `Plast×Predictability` = fmt(`clim_anomaly_tw60:clim_predictability_tw60`, pvals, "clim_anomaly_tw60:clim_predictability_tw60"),
-    `Plast×Autocorr` = fmt(`clim_anomaly_tw60:clim_autocorr_tw60`, pvals, "clim_anomaly_tw60:clim_autocorr_tw60"),
-    `Plast×Trend` = fmt(`clim_anomaly_tw60:clim_trend_tw60`, pvals, "clim_anomaly_tw60:clim_trend_tw60")
-  )
-
-table_clean_o_m
-
-
-write_xlsx(
-  table_clean_o_m,
-  here::here("output", "onset_mean_plasticity_table_result.xlsx")
-)
-
-# ---------------------------------------------------------------------------- #
-# Plot interactions of the best model #
-
-mod_final_o_m <- lmer(
-  ONSET_mean ~ clim_anomaly_tw60 *
-    (photo_tw60 +
-       clim_background_tw60 +
-       clim_predictability_tw60 + clim_autocorr_tw60) +
-    (1  | SITE_ID) +
-    (1 + clim_anomaly_tw60 | SPECIES),
+make_complete_data <- function(data, response, windows,
+                               include_autocorr = FALSE) {
   
-  data = d_o_m, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-summary(mod_final_o_m)
-performance::check_collinearity(mod_final_o_m)
-
-# sequences for predictor variables
-
-photo_seq <- seq(-2, 2, length.out = 100)
-trend_seq    <- seq(-2, 2, length.out = 100)
-pred_seq  <- seq(-2, 2, length.out = 100)
-auto_seq  <- seq(-2, 2, length.out = 100)
-back_seq  <- seq(-2, 2, length.out = 100)
-
-
-# get slopes of plasticity across gradients
-
-get_slope_df <- function(mod, var_name, var_seq, label,
-                         anomaly_name = "clim_anomaly_tw60") {
+  vars_needed <- unique(c(
+    response,
+    "SITE_ID",
+    "SPECIES",
+    unlist(lapply(windows, get_vars_window, include_autocorr = include_autocorr))
+  ))
   
-  b <- fixef(mod)
-  V <- vcov(mod)
+  vars_needed <- vars_needed[vars_needed %in% names(data)]
   
-  coef_main <- anomaly_name
+  data[stats::complete.cases(data[, vars_needed]), ]
+}
+
+make_manual_aic_table <- function(models) {
   
-  coef_int <- paste0(coef_main, ":", var_name)
-  if (!coef_int %in% names(b)) {
-    coef_int <- paste0(var_name, ":", coef_main)
+  tibble(
+    window = as.numeric(names(models)),
+    logLik = map_dbl(models, ~ as.numeric(logLik(.x))),
+    df = map_dbl(models, ~ attr(logLik(.x), "df")),
+    nobs = map_int(models, nobs)
+  ) |>
+    mutate(
+      AIC = -2 * logLik + 2 * df,
+      BIC = -2 * logLik + log(nobs) * df,
+      delta_AIC = AIC - min(AIC),
+      weight = exp(-0.5 * delta_AIC) / sum(exp(-0.5 * delta_AIC))
+    ) |>
+    arrange(AIC)
+}
+
+make_plasticity_formula <- function(response, window, random_cor = FALSE) {
+  
+  anomaly <- paste0("clim_anomaly_tw", window)
+  
+  random_species <- if (random_cor) {
+    paste0("(1 + ", anomaly, " | SPECIES)")
+  } else {
+    paste0("(1 + ", anomaly, " || SPECIES)")
   }
   
-  if (!all(c(coef_main, coef_int) %in% names(b))) {
-    stop(paste("No s'han trobat coeficients per:", var_name))
+  as.formula(paste0(
+    response, " ~ ",
+    anomaly, " + ",
+    "(1 | SITE_ID) + ",
+    random_species
+  ))
+}
+
+make_full_formula <- function(response, window,
+                              include_autocorr = FALSE,
+                              random_cor = FALSE) {
+  
+  anomaly <- paste0("clim_anomaly_tw", window)
+  moderators <- get_moderators_window(window, include_autocorr)
+  
+  random_species <- if (random_cor) {
+    paste0("(1 + ", anomaly, " | SPECIES)")
+  } else {
+    paste0("(1 + ", anomaly, " || SPECIES)")
+  }
+  
+  as.formula(paste0(
+    response, " ~ ",
+    anomaly, " * (", paste(moderators, collapse = " + "), ") + ",
+    "(1 | SITE_ID) + ",
+    random_species
+  ))
+}
+
+find_interaction_name <- function(coef_names, anomaly, moderator) {
+  
+  candidates <- c(
+    paste0(anomaly, ":", moderator),
+    paste0(moderator, ":", anomaly)
+  )
+  
+  out <- candidates[candidates %in% coef_names][1]
+  
+  if (is.na(out)) {
+    stop(paste("Interaction not found:", anomaly, "x", moderator))
+  }
+  
+  out
+}
+
+get_fixed_effects_table <- function(model) {
+  
+  coefs <- summary(model)$coefficients |>
+    as.data.frame() |>
+    tibble::rownames_to_column("term")
+  
+  names(coefs) <- gsub("Std. Error", "SE", names(coefs), fixed = TRUE)
+  names(coefs) <- gsub("Pr\\(>\\|t\\|\\)", "p", names(coefs))
+  
+  coefs |>
+    mutate(
+      lower_95 = Estimate - 1.96 * SE,
+      upper_95 = Estimate + 1.96 * SE
+    )
+}
+
+# ---------------------------------------------------------------------------- #
+# Window selection and full models
+# ---------------------------------------------------------------------------- #
+
+fit_window_selection_models <- function(data, response,
+                                        windows = c(30, 60, 90),
+                                        random_cor = FALSE) {
+  
+  d_tw <- make_complete_data(
+    data = data,
+    response = response,
+    windows = windows,
+    include_autocorr = FALSE
+  )
+  
+  models <- setNames(
+    lapply(windows, function(w) {
+      fit_lmer_model(
+        make_plasticity_formula(
+          response = response,
+          window = w,
+          random_cor = random_cor
+        ),
+        d_tw
+      )
+    }),
+    as.character(windows)
+  )
+  
+  list(
+    data = d_tw,
+    models = models,
+    table = make_manual_aic_table(models)
+  )
+}
+
+fit_full_models_all_windows <- function(data, response,
+                                        windows = c(30, 60, 90),
+                                        random_cor = FALSE) {
+  
+  d_tw <- make_complete_data(
+    data = data,
+    response = response,
+    windows = windows,
+    include_autocorr = FALSE
+  )
+  
+  models <- setNames(
+    lapply(windows, function(w) {
+      fit_lmer_model(
+        make_full_formula(
+          response = response,
+          window = w,
+          include_autocorr = FALSE,
+          random_cor = random_cor
+        ),
+        d_tw
+      )
+    }),
+    as.character(windows)
+  )
+  
+  list(
+    data = d_tw,
+    models = models,
+    table = make_manual_aic_table(models)
+  )
+}
+
+# ---------------------------------------------------------------------------- #
+# LRTs and interaction tables
+# ---------------------------------------------------------------------------- #
+
+get_lrt_for_interaction <- function(full_model, moderator, window, data, response,
+                                    random_cor = FALSE) {
+  
+  anomaly <- paste0("clim_anomaly_tw", window)
+  
+  all_moderators <- c(
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_predictability_tw", window),
+    paste0("clim_trend_tw", window)
+  )
+  
+  reduced_moderators <- setdiff(all_moderators, moderator)
+  
+  random_species <- if (random_cor) {
+    paste0("(1 + ", anomaly, " | SPECIES)")
+  } else {
+    paste0("(1 + ", anomaly, " || SPECIES)")
+  }
+  
+  reduced_formula <- as.formula(paste0(
+    response, " ~ ",
+    anomaly, " * (", paste(reduced_moderators, collapse = " + "), ") + ",
+    anomaly, " + ", moderator, " + ",
+    "(1 | SITE_ID) + ",
+    random_species
+  ))
+  
+  reduced_model <- fit_lmer_model(reduced_formula, data)
+  
+  lrt <- anova(reduced_model, full_model)
+  
+  logLik_reduced <- as.numeric(logLik(reduced_model))
+  logLik_full <- as.numeric(logLik(full_model))
+  df_reduced <- attr(logLik(reduced_model), "df")
+  df_full <- attr(logLik(full_model), "df")
+  
+  AIC_reduced <- -2 * logLik_reduced + 2 * df_reduced
+  AIC_full <- -2 * logLik_full + 2 * df_full
+  
+  BIC_reduced <- -2 * logLik_reduced + log(nobs(reduced_model)) * df_reduced
+  BIC_full <- -2 * logLik_full + log(nobs(full_model)) * df_full
+  
+  data.frame(
+    moderator_var = moderator,
+    interaction = paste0(anomaly, ":", moderator),
+    Chisq = lrt$Chisq[2],
+    LRT_df = lrt$Df[2],
+    p_LRT = lrt$`Pr(>Chisq)`[2],
+    AIC_reduced = AIC_reduced,
+    AIC_full = AIC_full,
+    delta_AIC = AIC_reduced - AIC_full,
+    BIC_reduced = BIC_reduced,
+    BIC_full = BIC_full,
+    delta_BIC = BIC_reduced - BIC_full
+  )
+}
+
+get_main_interaction_table <- function(model, window, data, response,
+                                       random_cor = FALSE) {
+  
+  anomaly <- paste0("clim_anomaly_tw", window)
+  
+  moderator_lookup <- tibble(
+    moderator_var = c(
+      paste0("photo_tw", window),
+      paste0("clim_background_tw", window),
+      paste0("clim_predictability_tw", window),
+      paste0("clim_trend_tw", window)
+    ),
+    moderator = c(
+      "Photoperiod",
+      "Mean temperature",
+      "Temperature predictability",
+      "Temperature trend"
+    ),
+    interpretation = c(
+      "Stronger advancement under longer photoperiods",
+      "Weaker advancement in warmer baseline climates",
+      "Stronger advancement in more predictable thermal environments",
+      "Stronger advancement in faster-warming environments"
+    )
+  )
+  
+  fixed_table <- get_fixed_effects_table(model)
+  
+  lrt_table <- map_dfr(
+    moderator_lookup$moderator_var,
+    ~ get_lrt_for_interaction(
+      full_model = model,
+      moderator = .x,
+      window = window,
+      data = data,
+      response = response,
+      random_cor = random_cor
+    )
+  )
+  
+  moderator_lookup |>
+    rowwise() |>
+    mutate(
+      term = find_interaction_name(
+        coef_names = fixed_table$term,
+        anomaly = anomaly,
+        moderator = moderator_var
+      )
+    ) |>
+    ungroup() |>
+    left_join(fixed_table, by = "term") |>
+    left_join(lrt_table, by = "moderator_var") |>
+    select(
+      all_of(c(
+        "moderator",
+        "term",
+        "Estimate",
+        "SE",
+        "lower_95",
+        "upper_95",
+        "Chisq",
+        "LRT_df",
+        "p_LRT",
+        "delta_AIC",
+        "delta_BIC",
+        "interpretation"
+      ))
+    )
+}
+
+# ---------------------------------------------------------------------------- #
+# Consistency table across full 30/60/90 models - simplified wide version
+# ---------------------------------------------------------------------------- #
+
+get_consistency_table_windows <- function(full_models, response) {
+  
+  consistency_long <- purrr::map_dfr(names(full_models), function(w) {
+    
+    model <- full_models[[w]]
+    window <- as.numeric(w)
+    fixed_table <- get_fixed_effects_table(model)
+    anomaly <- paste0("clim_anomaly_tw", window)
+    
+    moderators <- tibble::tibble(
+      moderator_var = c(
+        paste0("photo_tw", window),
+        paste0("clim_background_tw", window),
+        paste0("clim_predictability_tw", window),
+        paste0("clim_trend_tw", window)
+      ),
+      moderator = c(
+        "Photoperiod",
+        "Mean temperature",
+        "Temperature predictability",
+        "Temperature trend"
+      )
+    )
+    
+    moderators |>
+      dplyr::rowwise() |>
+      dplyr::mutate(
+        term = find_interaction_name(
+          coef_names = fixed_table$term,
+          anomaly = anomaly,
+          moderator = moderator_var
+        )
+      ) |>
+      dplyr::ungroup() |>
+      dplyr::left_join(fixed_table, by = "term") |>
+      dplyr::mutate(
+        response = response,
+        window = window,
+        sig = dplyr::case_when(
+          p < 0.001 ~ "***",
+          p < 0.01  ~ "**",
+          p < 0.05  ~ "*",
+          TRUE ~ ""
+        ),
+        estimate_ci = paste0(
+          round(Estimate, 2),
+          " [",
+          round(lower_95, 2),
+          ", ",
+          round(upper_95, 2),
+          "]",
+          sig
+        )
+      ) |>
+      dplyr::select(
+        response,
+        window,
+        moderator,
+        Estimate,
+        SE,
+        lower_95,
+        upper_95,
+        p,
+        sig,
+        estimate_ci
+      )
+  })
+  
+  consistency_long |>
+    dplyr::select(window, moderator, estimate_ci) |>
+    tidyr::pivot_wider(
+      names_from = moderator,
+      values_from = estimate_ci
+    ) |>
+    dplyr::arrange(window)
+}
+# ---------------------------------------------------------------------------- #
+# Plot functions
+# ---------------------------------------------------------------------------- #
+
+get_slope_df <- function(model, var_name, var_seq, label, anomaly_name) {
+  
+  b <- lme4::fixef(model)
+  V <- as.matrix(vcov(model))
+  
+  coef_main <- anomaly_name
+  coef_int <- paste0(coef_main, ":", var_name)
+  
+  if (!coef_int %in% names(b)) {
+    coef_int <- paste0(var_name, ":", coef_main)
   }
   
   coef_names <- c(coef_main, coef_int)
@@ -575,7 +721,9 @@ get_slope_df <- function(mod, var_name, var_seq, label,
     
     slope <- sum(b[coef_names] * g)
     
-    se <- as.numeric(sqrt(t(g) %*% V[coef_names, coef_names] %*% g))
+    se <- as.numeric(
+      sqrt(t(g) %*% V[coef_names, coef_names] %*% g)
+    )
     
     c(slope = slope, se = se)
   }
@@ -591,1383 +739,453 @@ get_slope_df <- function(mod, var_name, var_seq, label,
   )
 }
 
-df_photo <- get_slope_df(
-  mod_final_o_m,
-  "photo_tw60",
-  photo_seq,
-  "Photoperiod"
-)
-
-
-df_pred <- get_slope_df(
-  mod_final_o_m,
-  "clim_predictability_tw60",
-  pred_seq,
-  "Temperature stability"
-)
-
-df_auto <- get_slope_df(
-  mod_final_o_m,
-  "clim_autocorr_tw60",
-  auto_seq,
-  "Temperature autocorrelation"
-)
-
-df_back <- get_slope_df(
-  mod_final_o_m,
-  "clim_background_tw60",
-  back_seq,
-  "Mean temperature"
-)
-
-# combine data frames
-
-df_all <- dplyr::bind_rows(
-  df_photo,
-  df_pred,
-  df_auto,
-  df_back
-)
-
-# order facets
-
-df_all$variable <- factor(
-  df_all$variable,
-  levels = c(
-    "Photoperiod",
-    "Temperature trend",
-    "Temperature stability",
-    "Temperature autocorrelation",
-    "Mean temperature"
-  )
-)
-
-# plot
-
-plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = variable, fill = variable)) +
+make_plasticity_plot <- function(model, window,
+                                 phenology_label = "phenology",
+                                 ylim = NULL,
+                                 facet = FALSE) {
   
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.15, color = NA) +
+  anomaly <- paste0("clim_anomaly_tw", window)
+  seq_x <- seq(-2, 2, length.out = 100)
   
-  geom_line(size = 0.8, alpha = 0.6) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
-  
-  scale_color_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-    
-  )) +
-  
-  scale_fill_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-  )) +
-  
-  coord_cartesian(ylim = c(-9, -1)) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of onset vs temperature anomaly)",
-    color = "",
-    fill = ""
-  )
-plasticity_interactions_plot
-
-
-ggsave(
-  filename = here("output", "figures", "onset_mean_plasticity_interactions_plot.png"),
-  plot = plasticity_interactions_plot,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-
-# ---------------------------------------------------------------------------- #
-#### Peak (first peak) #### 
-
-df_first_peak <- subset(df, df$pheno_type == "FIRST_PEAK")
-
-# Anomaly time-window selection # 
-
-options(na.action = "na.omit")
-
-mod_30_f_p <- lmer(
-  FIRST_PEAK ~ clim_anomaly_tw30 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw30 | SPECIES),
-  data = df_first_peak, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_60_f_p <- lmer(
-  FIRST_PEAK ~ clim_anomaly_tw60 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw60 | SPECIES),
-  data = df_first_peak, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_90_f_p <- lmer(
-  FIRST_PEAK ~ clim_anomaly_tw90 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw90 | SPECIES),
-  data = df_first_peak, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-AIC(mod_30_f_p, mod_60_f_p, mod_90_f_p) ### Best time-window is 60 days before onset
-summary(mod_30_f_p)
-summary(mod_60_f_p)
-summary(mod_90_f_p)
-fixef(mod_30_f_p)["clim_anomaly_tw30"]
-fixef(mod_60_f_p)["clim_anomaly_tw60"]
-fixef(mod_90_f_p)["clim_anomaly_tw90"]
-
-
-# Plot effects
-
-extract_effect <- function(mod, var, label) {
-  tidy(mod) %>%
-    filter(term == var) %>%
-    mutate(window = label)
-}
-
-df_eff <- bind_rows(
-  extract_effect(mod_30_f_p, "clim_anomaly_tw30", "30 days"),
-  extract_effect(mod_60_f_p, "clim_anomaly_tw60", "60 days"),
-  extract_effect(mod_90_f_p, "clim_anomaly_tw90", "90 days")
-) %>%
-  mutate(
-    lower = estimate - 1.96 * std.error,
-    upper = estimate + 1.96 * std.error
-  )
-
-ggplot(df_eff, aes(x = window, y = estimate)) +
-  
-  geom_point(size = 3) +
-  
-  geom_errorbar(aes(ymin = lower, ymax = upper),
-                width = 0.1) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  
-  theme_classic(base_family = "Garamond") +
-  
-  labs(
-    x = "Time window",
-    y = "Phenological sensitivity\n(slope of onset vs temperature anomaly)"
-  )
-
-make_pred <- function(mod, var, label) {
-  
-  newdat <- data.frame(
-    anomaly = seq(-2, 2, length.out = 100)
+  df_plot <- bind_rows(
+    get_slope_df(model, paste0("photo_tw", window), seq_x, "Photoperiod", anomaly),
+    get_slope_df(model, paste0("clim_background_tw", window), seq_x, "Mean temperature", anomaly),
+    get_slope_df(model, paste0("clim_predictability_tw", window), seq_x, "Temperature predictability", anomaly),
+    get_slope_df(model, paste0("clim_trend_tw", window), seq_x, "Temperature trend", anomaly)
   )
   
-  names(newdat) <- var
-  
-  pred <- predict(
-    mod,
-    newdata = newdat,
-    re.form = NA,   # important!
-    se.fit = TRUE
-  )
-  
-  data.frame(
-    anomaly = newdat[[var]],
-    fit = pred$fit,
-    se = pred$se.fit,
-    window = label
-  )
-}
-
-df_pred <- dplyr::bind_rows(
-  make_pred(mod_30_f_p, "clim_anomaly_tw30", "30 days"),
-  make_pred(mod_60_f_p, "clim_anomaly_tw60", "60 days"),
-  make_pred(mod_90_f_p, "clim_anomaly_tw90", "90 days")
-)
-
-df_pred <- df_pred %>%
-  dplyr::mutate(
-    lower = fit - 1.96 * se,
-    upper = fit + 1.96 * se
-  )
-
-tw_peak_plasticity <- ggplot(df_pred, aes(anomaly, fit,
-                                          color = window,
-                                          fill = window)) +
-  
-  geom_line(size = 1.2) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.2, color = NA) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Temperature anomaly",
-    y = "Predicted first peak day",
-    color = "Time window",
-    fill = "Time window"
-  )
-
-tw_peak_plasticity
-
-ggsave(
-  filename = here("output", "figures", "tw_peak_preds.png"),
-  plot = tw_peak_plasticity,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-
-# ---------------------------------------------------------------------------- #
-# Model selection #
-
-d_f_p <- df_first_peak %>%
-  dplyr::filter(
-    !is.na(FIRST_PEAK),
-    !is.na(clim_anomaly_tw90),
-    !is.na(photo_tw90),
-    !is.na(clim_background_tw90),
-    !is.na(clim_predictability_tw90),
-    !is.na(clim_autocorr_tw90),
-    !is.na(clim_trend_tw90)
-  )
-
-global_mod_f_p <- lmer(
-  FIRST_PEAK ~ clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90 +
-       clim_autocorr_tw90 +
-       clim_trend_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
-  data = d_f_p, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-options(na.action = "na.fail")
-
-dd_f_p <- dredge(
-  global_mod_f_p,
-  fixed = "clim_anomaly_tw90",
-  subset =
-    dc("photo_tw90", "clim_anomaly_tw90:photo_tw90") &
-    dc("clim_background_tw90", "clim_anomaly_tw90:clim_background_tw90") &
-    dc("clim_predictability_tw90", "clim_anomaly_tw90:clim_predictability_tw90") &
-    dc("clim_autocorr_tw90", "clim_anomaly_tw90:clim_autocorr_tw90") &
-    dc("clim_trend_tw90", "clim_anomaly_tw90:clim_trend_tw90")
-)
-
-model.sel(dd_f_p)
-
-best_mod_f_p <- get.models(dd_f_p, subset = 1)[[1]]
-summary(best_mod_f_p)
-check_collinearity(best_mod_f_p)
-
-# --- all models ---
-ms_f_p <- model.sel(dd_f_p)
-
-all_models_f_p <- as.data.frame(ms_f_p)
-
-# --- stars function ---
-stars <- function(p) {
-  ifelse(p < 0.001, "***",
-         ifelse(p < 0.01, "**",
-                ifelse(p < 0.05, "*", "")))
-}
-
-# --- p-values from best model ---
-pvals <- summary(best_mod_f_p)$coefficients[, "Pr(>|t|)"]
-
-# --- clean table ---
-fmt <- function(x, pvals, name) {
-  
-  p <- pvals[name]
-  
-  if (is.na(p) && grepl(":", name)) {
-    parts <- strsplit(name, ":")[[1]]
-    alt_name <- paste0(parts[2], ":", parts[1])
-    if (alt_name %in% names(pvals)) {
-      p <- pvals[alt_name]
-    }
-  }
-  
-  ifelse(
-    is.na(x),
-    "—",
-    paste0(
-      round(x, 2),
-      ifelse(!is.na(p), stars(p), "")
+  df_plot$variable <- factor(
+    df_plot$variable,
+    levels = c(
+      "Photoperiod",
+      "Mean temperature",
+      "Temperature predictability",
+      "Temperature trend"
     )
   )
-}
-
-table_clean_f_p <- all_models_f_p %>%
-  transmute(
-    delta = round(delta, 2),
-    weight = signif(weight, 2),
-    
-    Plasticity = fmt(clim_anomaly_tw90, pvals, "clim_anomaly_tw90"),
-    Photoperiod = fmt(photo_tw90, pvals, "photo_tw90"),
-    Background = fmt(clim_background_tw90, pvals, "clim_background_tw90"),
-    Predictability = fmt(clim_predictability_tw90, pvals, "clim_predictability_tw90"),
-    Autocorrelation = fmt(clim_autocorr_tw90, pvals, "clim_autocorr_tw90"),
-    Trend = fmt(clim_trend_tw90, pvals, "clim_trend_tw90"),
-    
-    `Plast×Photo` = fmt(`clim_anomaly_tw90:photo_tw90`, pvals, "clim_anomaly_tw90:photo_tw90"),
-    `Plast×Background` = fmt(`clim_anomaly_tw90:clim_background_tw90`, pvals, "clim_anomaly_tw90:clim_background_tw90"),
-    `Plast×Predictability` = fmt(`clim_anomaly_tw90:clim_predictability_tw90`, pvals, "clim_anomaly_tw90:clim_predictability_tw90"),
-    `Plast×Autocorr` = fmt(`clim_anomaly_tw90:clim_autocorr_tw90`, pvals, "clim_anomaly_tw90:clim_autocorr_tw90"),
-    `Plast×Trend` = fmt(`clim_anomaly_tw90:clim_trend_tw90`, pvals, "clim_anomaly_tw90:clim_trend_tw90")
-  )
-
-table_clean_f_p
-
-
-write_xlsx(
-  table_clean_f_p,
-  here::here("output", "onset_first_peak_plasticity_table_result.xlsx")
-)
-
-# ---------------------------------------------------------------------------- #
-# Plot interactions of the best model #
-
-mod_final_f_p <- lmer(
-  FIRST_PEAK ~ clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90 + clim_autocorr_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
   
-  data = d_f_p, REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-summary(mod_final_f_p)
-performance::check_collinearity(mod_final_f_p)
-
-# sequences for predictor variables
-
-photo_seq <- seq(-2, 2, length.out = 100)
-trend_seq    <- seq(-2, 2, length.out = 100)
-pred_seq  <- seq(-2, 2, length.out = 100)
-auto_seq  <- seq(-2, 2, length.out = 100)
-back_seq  <- seq(-2, 2, length.out = 100)
-
-
-# get slopes of plasticity across gradients
-
-get_slope_df <- function(mod, var_name, var_seq, label,
-                         anomaly_name = "clim_anomaly_tw90") {
-  
-  b <- fixef(mod)
-  V <- vcov(mod)
-  
-  coef_main <- anomaly_name
-  
-  coef_int <- paste0(coef_main, ":", var_name)
-  if (!coef_int %in% names(b)) {
-    coef_int <- paste0(var_name, ":", coef_main)
-  }
-  
-  if (!all(c(coef_main, coef_int) %in% names(b))) {
-    stop(paste("No s'han trobat coeficients per:", var_name))
-  }
-  
-  coef_names <- c(coef_main, coef_int)
-  
-  get_slope <- function(x) {
-    
-    g <- c(1, x)
-    
-    slope <- sum(b[coef_names] * g)
-    
-    se <- as.numeric(sqrt(t(g) %*% V[coef_names, coef_names] %*% g))
-    
-    c(slope = slope, se = se)
-  }
-  
-  out <- do.call(rbind, lapply(var_seq, get_slope))
-  
-  data.frame(
-    x = var_seq,
-    slope = out[, "slope"],
-    lower = out[, "slope"] - 1.96 * out[, "se"],
-    upper = out[, "slope"] + 1.96 * out[, "se"],
-    variable = label
-  )
-}
-
-df_photo <- get_slope_df(
-  mod_final_f_p,
-  "photo_tw90",
-  photo_seq,
-  "Photoperiod"
-)
-
-
-df_pred <- get_slope_df(
-  mod_final_f_p,
-  "clim_predictability_tw90",
-  pred_seq,
-  "Temperature stability"
-)
-
-df_auto <- get_slope_df(
-  mod_final_f_p,
-  "clim_autocorr_tw90",
-  auto_seq,
-  "Temperature autocorrelation"
-)
-
-df_back <- get_slope_df(
-  mod_final_f_p,
-  "clim_background_tw90",
-  back_seq,
-  "Mean temperature"
-)
-
-# combine data frames
-
-df_all <- dplyr::bind_rows(
-  df_photo,
-  df_pred,
-  df_auto,
-  df_back
-)
-
-# order facets
-
-df_all$variable <- factor(
-  df_all$variable,
-  levels = c(
-    "Photoperiod",
-    "Temperature trend",
-    "Temperature stability",
-    "Temperature autocorrelation",
-    "Mean temperature"
-  )
-)
-
-# plot
-
-first_peak_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = variable, fill = variable)) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.15, color = NA) +
-  
-  geom_line(size = 0.8, alpha = 0.6) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
-  
-  scale_color_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-    
-  )) +
-  
-  scale_fill_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-  )) +
-  
-  coord_cartesian(ylim = c(-7, -2.5)) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of first peak day vs temperature anomaly)",
-    color = "",
-    fill = ""
-  )
-first_peak_plasticity_interactions_plot
-
-
-ggsave(
-  filename = here("output", "figures", "first_peak_plasticity_interactions_plot.png"),
-  plot = first_peak_plasticity_interactions_plot,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-
-
-# ---------------------------------------------------------------------------- #
-#### Offset (mean) #### 
-
-df_offset_mean <- subset(df, df$pheno_type == "OFFSET_mean")
-
-# Anomaly time-window selection # 
-
-#1. Univoltine species 
-
-options(na.action = "na.omit")
-
-mod_30_off_uni <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw30 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw30 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "univoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_60_off_uni <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw60 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw60 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "univoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_90_off_uni <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw90 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw90 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "univoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-AIC(mod_30_off_uni, mod_60_off_uni, mod_90_off_uni) ### Best time-window is 60 days before offset
-summary(mod_30_off_uni)
-summary(mod_60_off_uni)
-summary(mod_90_off_uni)
-fixef(mod_30_off_uni)["clim_anomaly_tw30"]
-fixef(mod_60_off_uni)["clim_anomaly_tw60"]
-fixef(mod_90_off_uni)["clim_anomaly_tw90"]
-
-
-# Plot effects
-
-extract_effect <- function(mod, var, label) {
-  tidy(mod) %>%
-    filter(term == var) %>%
-    mutate(window = label)
-}
-
-df_eff <- bind_rows(
-  extract_effect(mod_30_off_uni, "clim_anomaly_tw30", "30 days"),
-  extract_effect(mod_60_off_uni, "clim_anomaly_tw60", "60 days"),
-  extract_effect(mod_90_off_uni, "clim_anomaly_tw90", "90 days")
-) %>%
-  mutate(
-    lower = estimate - 1.96 * std.error,
-    upper = estimate + 1.96 * std.error
-  )
-
-ggplot(df_eff, aes(x = window, y = estimate)) +
-  
-  geom_point(size = 3) +
-  
-  geom_errorbar(aes(ymin = lower, ymax = upper),
-                width = 0.1) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  
-  theme_classic(base_family = "Garamond") +
-  
-  labs(
-    x = "Time window",
-    y = "Phenological sensitivity\n(slope of offset vs temperature anomaly)"
-  )
-
-make_pred <- function(mod, var, label) {
-  
-  newdat <- data.frame(
-    anomaly = seq(-2, 2, length.out = 100)
-  )
-  
-  names(newdat) <- var
-  
-  pred <- predict(
-    mod,
-    newdata = newdat,
-    re.form = NA,   # important!
-    se.fit = TRUE
-  )
-  
-  data.frame(
-    anomaly = newdat[[var]],
-    fit = pred$fit,
-    se = pred$se.fit,
-    window = label
-  )
-}
-
-df_pred <- dplyr::bind_rows(
-  make_pred(mod_30_off_uni, "clim_anomaly_tw30", "30 days"),
-  make_pred(mod_60_off_uni, "clim_anomaly_tw60", "60 days"),
-  make_pred(mod_90_off_uni, "clim_anomaly_tw90", "90 days")
-)
-
-df_pred <- df_pred %>%
-  dplyr::mutate(
-    lower = fit - 1.96 * se,
-    upper = fit + 1.96 * se
-  )
-
-tw_offset_univoltine <- ggplot(df_pred, aes(anomaly, fit,
-                                            color = window,
-                                            fill = window)) +
-  
-  geom_line(size = 1.2) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.2, color = NA) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Temperature anomaly",
-    y = "Predicted offset",
-    color = "Time window",
-    fill = "Time window"
-  )
-
-tw_offset_univoltine
-
-ggsave(
-  filename = here("output", "figures", "tw_offset_univoltine.png"),
-  plot = tw_offset_univoltine,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-#1. Multivoltine species 
-
-options(na.action = "na.omit")
-
-mod_30_off_multi <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw30 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw30 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_60_off_multi <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw60 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw60 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-mod_90_off_multi <- lmer(
-  OFFSET_mean ~ clim_anomaly_tw90 +
-    (1 | SITE_ID) + (1 + clim_anomaly_tw90 | SPECIES),
-  data = df_offset_mean |> dplyr::filter(voltinism == "multivoltine"), 
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-AIC(mod_30_off_multi, mod_60_off_multi, mod_90_off_multi) ### Best time-window is 60 days before offset
-summary(mod_30_off_multi)
-summary(mod_60_off_multi)
-summary(mod_90_off_multi)
-fixef(mod_30_off_multi)["clim_anomaly_tw30"]
-fixef(mod_60_off_multi)["clim_anomaly_tw60"]
-fixef(mod_90_off_multi)["clim_anomaly_tw90"]
-
-
-# Plot effects
-
-df_eff <- bind_rows(
-  extract_effect(mod_30_off_multi, "clim_anomaly_tw30", "30 days"),
-  extract_effect(mod_60_off_multi, "clim_anomaly_tw60", "60 days"),
-  extract_effect(mod_90_off_multi, "clim_anomaly_tw90", "90 days")
-) %>%
-  mutate(
-    lower = estimate - 1.96 * std.error,
-    upper = estimate + 1.96 * std.error
-  )
-
-ggplot(df_eff, aes(x = window, y = estimate)) +
-  
-  geom_point(size = 3) +
-  
-  geom_errorbar(aes(ymin = lower, ymax = upper),
-                width = 0.1) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  
-  theme_classic(base_family = "Garamond") +
-  
-  labs(
-    x = "Time window",
-    y = "Phenological sensitivity\n(slope of offset vs temperature anomaly)"
-  )
-
-make_pred <- function(mod, var, label) {
-  
-  newdat <- data.frame(
-    temp = seq(-2, 2, length.out = 100)
-  )
-  
-  names(newdat) <- var
-  
-  pred <- predict(
-    mod,
-    newdata = newdat,
-    re.form = NA,
-    se.fit = TRUE
-  )
-  
-  data.frame(
-    anomaly = newdat[[var]],
-    fit = pred$fit,
-    se = pred$se.fit,
-    window = label
-  )
-}
-
-df_pred <- dplyr::bind_rows(
-  make_pred(mod_30_off_multi, "clim_anomaly_tw30", "30 days"),
-  make_pred(mod_60_off_multi, "clim_anomaly_tw60", "60 days"),
-  make_pred(mod_90_off_multi, "clim_anomaly_tw90", "90 days")
-) %>%
-  dplyr::mutate(
-    lower = fit - 1.96 * se,
-    upper = fit + 1.96 * se
-  )
-
-tw_offset_multivoltine <- ggplot(
-  df_pred,
-  aes(anomaly, fit, color = window, fill = window)
-) +
-  geom_line(size = 1.2) +
-  geom_ribbon(
-    aes(ymin = lower, ymax = upper),
-    alpha = 0.2,
-    color = NA
+  p <- ggplot(
+    df_plot,
+    aes(x = x, y = slope, color = variable, fill = variable)
   ) +
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  labs(
-    x = "Temperature anomaly",
-    y = "Predicted offset",
-    color = "Time window",
-    fill = "Time window"
-  )
-
-tw_offset_multivoltine
-
-ggsave(
-  filename = here("output", "figures", "tw_offset_multivoltine.png"),
-  plot = tw_offset_multivoltine,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.15, color = NA) +
+    geom_line(linewidth = 0.8, alpha = 0.75) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    scale_color_manual(values = c(
+      "Photoperiod" = "#1b9e77",
+      "Mean temperature" = "#E6AB02",
+      "Temperature predictability" = "#7570b3",
+      "Temperature trend" = "#d95f02"
+    )) +
+    scale_fill_manual(values = c(
+      "Photoperiod" = "#1b9e77",
+      "Mean temperature" = "#E6AB02",
+      "Temperature predictability" = "#7570b3",
+      "Temperature trend" = "#d95f02"
+    )) +
+    theme_classic(base_family = "Garamond", base_size = 16) +
+    labs(
+      x = "Environmental gradient",
+      y = paste0("Slope of ", phenology_label, " vs. temperature anomaly"),
+      color = "",
+      fill = ""
+    )
+  
+  if (!is.null(ylim)) {
+    p <- p + coord_cartesian(ylim = ylim)
+  }
+  
+  if (facet) {
+    p <- p +
+      facet_wrap(~ variable, nrow = 1) +
+      guides(color = "none", fill = "none")
+  }
+  
+  p
+}
 
 # ---------------------------------------------------------------------------- #
-# Model selection #
+# Save and return figures for all full models
+# ---------------------------------------------------------------------------- #
 
-d_off_m <- df_offset_mean %>%
+save_full_model_figures_all_windows <- function(full_models,
+                                                output_prefix,
+                                                out_dir,
+                                                phenology_label = "phenology",
+                                                plot_ylim = NULL,
+                                                facet_plot = FALSE) {
+  
+  plots <- purrr::imap(full_models, function(mod, w) {
+    
+    p <- make_plasticity_plot(
+      model = mod,
+      window = as.numeric(w),
+      phenology_label = phenology_label,
+      ylim = plot_ylim,
+      facet = facet_plot
+    )
+    
+    ggsave(
+      filename = file.path(
+        out_dir,
+        "figures",
+        paste0(output_prefix, "_full_model_tw", w, "_plasticity_interactions.png")
+      ),
+      plot = p,
+      width = 7,
+      height = 5,
+      dpi = 300
+    )
+    
+    p
+  })
+  
+  plots
+}
+
+# ---------------------------------------------------------------------------- #
+# Alternative predictor models
+# ---------------------------------------------------------------------------- #
+
+safe_max_vif <- function(model) {
+  
+  out <- tryCatch(
+    performance::check_collinearity(model),
+    error = function(e) NULL
+  )
+  
+  if (is.null(out)) return(NA_real_)
+  
+  suppressWarnings(max(out$VIF, na.rm = TRUE))
+}
+
+make_alt_aic_table <- function(models) {
+  
+  tibble(
+    model = names(models),
+    logLik = map_dbl(models, ~ as.numeric(logLik(.x))),
+    df = map_dbl(models, ~ attr(logLik(.x), "df")),
+    nobs = map_int(models, nobs),
+    max_VIF = map_dbl(models, safe_max_vif)
+  ) |>
+    mutate(
+      AIC = -2 * logLik + 2 * df,
+      BIC = -2 * logLik + log(nobs) * df,
+      delta_AIC = AIC - min(AIC),
+      weight = exp(-0.5 * delta_AIC) / sum(exp(-0.5 * delta_AIC))
+    ) |>
+    arrange(AIC)
+}
+
+fit_alternative_models <- function(data, response, window,
+                                   random_cor = FALSE) {
+  
+  anomaly <- paste0("clim_anomaly_tw", window)
+  
+  build_custom_formula <- function(moderators) {
+    
+    random_species <- if (random_cor) {
+      paste0("(1 + ", anomaly, " | SPECIES)")
+    } else {
+      paste0("(1 + ", anomaly, " || SPECIES)")
+    }
+    
+    as.formula(paste0(
+      response, " ~ ",
+      anomaly, " * (", paste(moderators, collapse = " + "), ") + ",
+      "(1 | SITE_ID) + ",
+      random_species
+    ))
+  }
+  
+  mods_main <- c(
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_predictability_tw", window),
+    paste0("clim_trend_tw", window)
+  )
+  
+  mods_plus_autocorr <- c(
+    mods_main,
+    paste0("clim_autocorr_tw", window)
+  )
+  
+  mods_autocorr_instead <- c(
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_autocorr_tw", window),
+    paste0("clim_trend_tw", window)
+  )
+  
+  mods_no_trend <- c(
+    paste0("photo_tw", window),
+    paste0("clim_background_tw", window),
+    paste0("clim_predictability_tw", window)
+  )
+  
+  models <- list(
+    main = fit_lmer_model(build_custom_formula(mods_main), data),
+    main_plus_autocorr = fit_lmer_model(build_custom_formula(mods_plus_autocorr), data),
+    autocorr_instead_predictability = fit_lmer_model(build_custom_formula(mods_autocorr_instead), data),
+    no_trend = fit_lmer_model(build_custom_formula(mods_no_trend), data)
+  )
+  
+  list(
+    models = models,
+    table = make_alt_aic_table(models)
+  )
+}
+
+# ---------------------------------------------------------------------------- #
+# Main wrapper
+# ---------------------------------------------------------------------------- #
+
+run_plasticity_protocol <- function(data,
+                                    response,
+                                    output_prefix,
+                                    windows = c(30, 60, 90),
+                                    out_dir = here("output", "phenology_plasticity"),
+                                    random_cor = FALSE,
+                                    phenology_label = "phenology",
+                                    plot_ylim = NULL,
+                                    facet_plot = FALSE) {
+  
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(out_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(out_dir, "tables"), recursive = TRUE, showWarnings = FALSE)
+  
+  window_selection <- fit_window_selection_models(
+    data = data,
+    response = response,
+    windows = windows,
+    random_cor = random_cor
+  )
+  
+  tw_selection_table <- window_selection$table
+  best_window <- tw_selection_table$window[1]
+  
+  full_window_models <- fit_full_models_all_windows(
+    data = data,
+    response = response,
+    windows = windows,
+    random_cor = random_cor
+  )
+  
+  full_models_by_window <- full_window_models$models
+  full_window_table <- full_window_models$table
+  
+  mod_main <- full_models_by_window[[as.character(best_window)]]
+  d_main <- full_window_models$data
+  
+  fixed_table <- get_fixed_effects_table(mod_main)
+  
+  interaction_table <- get_main_interaction_table(
+    model = mod_main,
+    window = best_window,
+    data = d_main,
+    response = response,
+    random_cor = random_cor
+  )
+  
+  consistency_windows <- get_consistency_table_windows(
+    full_models = full_models_by_window,
+    response = response
+  )
+  
+  plasticity_plot <- make_plasticity_plot(
+    model = mod_main,
+    window = best_window,
+    phenology_label = phenology_label,
+    ylim = plot_ylim,
+    facet = facet_plot
+  )
+  
+  ggsave(
+    filename = file.path(
+      out_dir,
+      "figures",
+      paste0(output_prefix, "_main_tw", best_window, "_plasticity_interactions.png")
+    ),
+    plot = plasticity_plot,
+    width = 7,
+    height = 5,
+    dpi = 300
+  )
+  
+  plots_all_windows <- save_full_model_figures_all_windows(
+    full_models = full_models_by_window,
+    output_prefix = output_prefix,
+    out_dir = out_dir,
+    phenology_label = phenology_label,
+    plot_ylim = plot_ylim,
+    facet_plot = facet_plot
+  )
+  
+  vars_alt <- c(
+    response,
+    "SITE_ID",
+    "SPECIES",
+    get_vars_window(best_window, include_autocorr = TRUE)
+  )
+  
+  vars_alt <- vars_alt[vars_alt %in% names(data)]
+  d_alt <- data[stats::complete.cases(data[, vars_alt]), ]
+  
+  alt_models <- fit_alternative_models(
+    data = d_alt,
+    response = response,
+    window = best_window,
+    random_cor = random_cor
+  )
+  
+  write_xlsx(
+    list(
+      window_selection_anomaly_only = tw_selection_table,
+      full_model_AIC_all_windows = full_window_table,
+      main_interactions = interaction_table,
+      main_fixed_effects = fixed_table,
+      consistency_across_windows = consistency_windows,
+      alternative_predictor_sets = alt_models$table
+    ),
+    path = file.path(
+      out_dir,
+      "tables",
+      paste0(output_prefix, "_plasticity_protocol_tables.xlsx")
+    )
+  )
+  
+  list(
+    best_window = best_window,
+    window_selection_models = window_selection$models,
+    window_selection_table = tw_selection_table,
+    full_models_by_window = full_models_by_window,
+    full_window_table = full_window_table,
+    main_model = mod_main,
+    main_interaction_table = interaction_table,
+    main_fixed_effects = fixed_table,
+    consistency_windows = consistency_windows,
+    alternative_models = alt_models,
+    plot = plasticity_plot,
+    plots_all_windows = plots_all_windows
+  )
+}
+
+# ---------------------------------------------------------------------------- #
+#### Onset mean ####
+# ---------------------------------------------------------------------------- #
+
+df_onset_mean <- df |>
+  filter(pheno_type == "ONSET_mean")
+
+res_onset_mean <- run_plasticity_protocol(
+  data = df_onset_mean,
+  response = "ONSET_mean",
+  output_prefix = "onset_mean",
+  windows = c(30, 60, 90),
+  out_dir = here("output", "phenology_plasticity"),
+  random_cor = FALSE,
+  phenology_label = "onset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
+)
+
+res_onset_mean$best_window
+res_onset_mean$window_selection_table
+res_onset_mean$full_window_table
+res_onset_mean$main_interaction_table
+res_onset_mean$consistency_windows
+summary(res_onset_mean$main_model)
+performance::check_collinearity(res_onset_mean$main_model)
+res_onset_mean$plots_all_windows[["30"]]
+res_onset_mean$plots_all_windows[["60"]]
+res_onset_mean$plots_all_windows[["90"]]
+
+# ---------------------------------------------------------------------------- #
+#### First peak ####
+# ---------------------------------------------------------------------------- #
+
+df_first_peak <- df |>
+  dplyr::filter(pheno_type == "FIRST_PEAK")
+
+res_first_peak <- run_plasticity_protocol(
+  data = df_first_peak,
+  response = "FIRST_PEAK",
+  output_prefix = "first_peak",
+  windows = c(30, 60, 90),
+  out_dir = here("output", "phenology_plasticity"),
+  random_cor = FALSE,
+  phenology_label = "first peak",
+  plot_ylim = NULL,
+  facet_plot = FALSE
+)
+
+res_first_peak$best_window
+res_first_peak$window_selection_table
+res_first_peak$main_interaction_table
+res_first_peak$consistency_windows
+res_first_peak$plots_all_windows[["30"]]
+res_first_peak$plots_all_windows[["60"]]
+res_first_peak$plots_all_windows[["90"]]
+
+
+# ---------------------------------------------------------------------------- #
+#### Offset mean - univoltine ####
+# ---------------------------------------------------------------------------- #
+
+df_offset_uni <- df |>
   dplyr::filter(
-    !is.na(OFFSET_mean),
-    !is.na(clim_anomaly_tw90),
-    !is.na(photo_tw90),
-    !is.na(clim_background_tw90),
-    !is.na(clim_predictability_tw90),
-    !is.na(clim_autocorr_tw90),
-    !is.na(clim_trend_tw90)
+    pheno_type == "OFFSET_mean",
+    voltinism == "univoltine"
   )
 
-
-# Univoltine model
-global_mod_off_m_uni <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90 +
-       clim_autocorr_tw90 +
-       clim_trend_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
-  data = d_off_m |> dplyr::filter(voltinism == "univoltine"),
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
+res_offset_uni <- run_plasticity_protocol(
+  data = df_offset_uni,
+  response = "OFFSET_mean",
+  output_prefix = "offset_mean_univoltine",
+  windows = c(30, 60, 90),
+  out_dir = here("output", "phenology_plasticity"),
+  random_cor = FALSE,
+  phenology_label = "offset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
 )
 
-# Multivoltine model
-global_mod_off_m_multi <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90 +
-       clim_autocorr_tw90 +
-       clim_trend_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
-  data = d_off_m |> dplyr::filter(voltinism == "multivoltine"),
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-options(na.action = "na.fail")
-
-
-# Model selection univoltine
-dd_off_m_uni <- dredge(
-  global_mod_off_m_uni,
-  fixed = "clim_anomaly_tw90",
-  subset =
-    dc("photo_tw90", "clim_anomaly_tw90:photo_tw90") &
-    dc("clim_background_tw90", "clim_anomaly_tw90:clim_background_tw90") &
-    dc("clim_predictability_tw90", "clim_anomaly_tw90:clim_predictability_tw90") &
-    dc("clim_autocorr_tw90", "clim_anomaly_tw90:clim_autocorr_tw90") &
-    dc("clim_trend_tw90", "clim_anomaly_tw90:clim_trend_tw90")
-)
-
-model.sel(dd_off_m_uni)
-
-best_mod_off_m_uni <- get.models(dd_off_m_uni, subset = 1)[[1]]
-summary(best_mod_off_m_uni)
-check_collinearity(best_mod_off_m_uni)
-
-# --- all models ---
-ms_off_m_uni <- model.sel(dd_off_m_uni)
-
-all_models_off_m_uni <- as.data.frame(ms_off_m_uni)
-
-# --- stars function ---
-stars <- function(p) {
-  ifelse(p < 0.001, "***",
-         ifelse(p < 0.01, "**",
-                ifelse(p < 0.05, "*", "")))
-}
-
-# --- p-values from best model ---
-pvals <- summary(best_mod_off_m_uni)$coefficients[, "Pr(>|t|)"]
-
-# --- clean table ---
-fmt <- function(x, pvals, name) {
-  
-  p <- pvals[name]
-  
-  if (is.na(p) && grepl(":", name)) {
-    parts <- strsplit(name, ":")[[1]]
-    alt_name <- paste0(parts[2], ":", parts[1])
-    if (alt_name %in% names(pvals)) {
-      p <- pvals[alt_name]
-    }
-  }
-  
-  ifelse(
-    is.na(x),
-    "—",
-    paste0(
-      round(x, 2),
-      ifelse(!is.na(p), stars(p), "")
-    )
-  )
-}
-
-table_clean_off_m_uni <- all_models_off_m_uni %>%
-  transmute(
-    delta = round(delta, 2),
-    weight = signif(weight, 2),
-    
-    Plasticity = fmt(clim_anomaly_tw90, pvals, "clim_anomaly_tw90"),
-    Photoperiod = fmt(photo_tw90, pvals, "photo_tw90"),
-    Background = fmt(clim_background_tw90, pvals, "clim_background_tw90"),
-    Predictability = fmt(clim_predictability_tw90, pvals, "clim_predictability_tw90"),
-    Autocorrelation = fmt(clim_autocorr_tw90, pvals, "clim_autocorr_tw90"),
-    Trend = fmt(clim_trend_tw90, pvals, "clim_trend_tw90"),
-    
-    `Plast×Photo` = fmt(`clim_anomaly_tw90:photo_tw90`, pvals, "clim_anomaly_tw90:photo_tw90"),
-    `Plast×Background` = fmt(`clim_anomaly_tw90:clim_background_tw90`, pvals, "clim_anomaly_tw90:clim_background_tw90"),
-    `Plast×Predictability` = fmt(`clim_anomaly_tw90:clim_predictability_tw90`, pvals, "clim_anomaly_tw90:clim_predictability_tw90"),
-    `Plast×Autocorr` = fmt(`clim_anomaly_tw90:clim_autocorr_tw90`, pvals, "clim_anomaly_tw90:clim_autocorr_tw90"),
-    `Plast×Trend` = fmt(`clim_anomaly_tw90:clim_trend_tw90`, pvals, "clim_anomaly_tw90:clim_trend_tw90")
-  )
-
-table_clean_off_m_uni
-
-
-write_xlsx(
-  table_clean_off_m_uni,
-  here::here("output", "uni_offset_mean_plasticity_table_result.xlsx")
-)
-
-
-# Model selection multivoltine
-dd_off_m_multi <- dredge(
-  global_mod_off_m_multi,
-  fixed = "clim_anomaly_tw90",
-  subset =
-    dc("photo_tw90", "clim_anomaly_tw90:photo_tw90") &
-    dc("clim_background_tw90", "clim_anomaly_tw90:clim_background_tw90") &
-    dc("clim_predictability_tw90", "clim_anomaly_tw90:clim_predictability_tw90") &
-    dc("clim_autocorr_tw90", "clim_anomaly_tw90:clim_autocorr_tw90") &
-    dc("clim_trend_tw90", "clim_anomaly_tw90:clim_trend_tw90")
-)
-
-model.sel(dd_off_m_multi)
-
-best_mod_off_m_multi <- get.models(dd_off_m_multi, subset = 1)[[1]]
-summary(best_mod_off_m_multi)
-check_collinearity(best_mod_off_m_multi)
-
-# --- all models ---
-ms_off_m_multi <- model.sel(dd_off_m_multi)
-
-all_models_off_m_multi <- as.data.frame(ms_off_m_multi)
-
-# --- stars function ---
-stars <- function(p) {
-  ifelse(p < 0.001, "***",
-         ifelse(p < 0.01, "**",
-                ifelse(p < 0.05, "*", "")))
-}
-
-# --- p-values from best model ---
-pvals <- summary(best_mod_off_m_multi)$coefficients[, "Pr(>|t|)"]
-
-# --- clean table ---
-fmt <- function(x, pvals, name) {
-  
-  p <- pvals[name]
-  
-  if (is.na(p) && grepl(":", name)) {
-    parts <- strsplit(name, ":")[[1]]
-    alt_name <- paste0(parts[2], ":", parts[1])
-    if (alt_name %in% names(pvals)) {
-      p <- pvals[alt_name]
-    }
-  }
-  
-  ifelse(
-    is.na(x),
-    "—",
-    paste0(
-      round(x, 2),
-      ifelse(!is.na(p), stars(p), "")
-    )
-  )
-}
-
-table_clean_off_m_multi <- all_models_off_m_multi %>%
-  transmute(
-    delta = round(delta, 2),
-    weight = signif(weight, 2),
-    
-    Plasticity = fmt(clim_anomaly_tw90, pvals, "clim_anomaly_tw90"),
-    Photoperiod = fmt(photo_tw90, pvals, "photo_tw90"),
-    Background = fmt(clim_background_tw90, pvals, "clim_background_tw90"),
-    Predictability = fmt(clim_predictability_tw90, pvals, "clim_predictability_tw90"),
-    Autocorrelation = fmt(clim_autocorr_tw90, pvals, "clim_autocorr_tw90"),
-    Trend = fmt(clim_trend_tw90, pvals, "clim_trend_tw90"),
-    
-    `Plast×Photo` = fmt(`clim_anomaly_tw90:photo_tw90`, pvals, "clim_anomaly_tw90:photo_tw90"),
-    `Plast×Background` = fmt(`clim_anomaly_tw90:clim_background_tw90`, pvals, "clim_anomaly_tw90:clim_background_tw90"),
-    `Plast×Predictability` = fmt(`clim_anomaly_tw90:clim_predictability_tw90`, pvals, "clim_anomaly_tw90:clim_predictability_tw90"),
-    `Plast×Autocorr` = fmt(`clim_anomaly_tw90:clim_autocorr_tw90`, pvals, "clim_anomaly_tw90:clim_autocorr_tw90"),
-    `Plast×Trend` = fmt(`clim_anomaly_tw90:clim_trend_tw90`, pvals, "clim_anomaly_tw90:clim_trend_tw90")
-  )
-
-table_clean_off_m_multi
-
-
-write_xlsx(
-  table_clean_off_m_multi,
-  here::here("output", "multi_offset_mean_plasticity_table_result.xlsx")
-)
+res_offset_uni$best_window
+res_offset_uni$window_selection_table
+res_offset_uni$main_interaction_table
+res_offset_uni$consistency_windows
+res_offset_uni$plots_all_windows[["30"]]
+res_offset_uni$plots_all_windows[["60"]]
+res_offset_uni$plots_all_windows[["90"]]
 
 
 # ---------------------------------------------------------------------------- #
-# Plot interactions of the best model #
+#### Offset mean - multivoltine ####
+# ---------------------------------------------------------------------------- #
 
-# ------------ Univoltine species -------------- #
-
-mod_final_off_m_uni <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90 + clim_autocorr_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
-  data = d_off_m |> dplyr::filter(voltinism == "univoltine"),
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
+df_offset_multi <- df |>
+  dplyr::filter(
+    pheno_type == "OFFSET_mean",
+    voltinism == "multivoltine"
   )
+
+res_offset_multi <- run_plasticity_protocol(
+  data = df_offset_multi,
+  response = "OFFSET_mean",
+  output_prefix = "offset_mean_multivoltine",
+  windows = c(30, 60, 90),
+  out_dir = here("output", "phenology_plasticity"),
+  random_cor = FALSE,
+  phenology_label = "offset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
 )
 
-summary(mod_final_off_m_uni)
-performance::check_collinearity(mod_final_off_m_uni)
+res_offset_multi$best_window
+res_offset_multi$window_selection_table
+res_offset_multi$main_interaction_table
+res_offset_multi$consistency_windows
+res_offset_multi$plots_all_windows[["30"]]
+res_offset_multi$plots_all_windows[["60"]]
+res_offset_multi$plots_all_windows[["90"]]
 
-# sequences for predictor variables
-
-photo_seq <- seq(-2, 2, length.out = 100)
-trend_seq    <- seq(-2, 2, length.out = 100)
-pred_seq  <- seq(-2, 2, length.out = 100)
-auto_seq  <- seq(-2, 2, length.out = 100)
-back_seq  <- seq(-2, 2, length.out = 100)
-
-
-# get slopes of plasticity across gradients
-
-get_slope_df <- function(mod, var_name, var_seq, label,
-                         anomaly_name = "clim_anomaly_tw90") {
-  
-  b <- fixef(mod)
-  V <- vcov(mod)
-  
-  coef_main <- anomaly_name
-  
-  coef_int <- paste0(coef_main, ":", var_name)
-  if (!coef_int %in% names(b)) {
-    coef_int <- paste0(var_name, ":", coef_main)
-  }
-  
-  if (!all(c(coef_main, coef_int) %in% names(b))) {
-    stop(paste("No s'han trobat coeficients per:", var_name))
-  }
-  
-  coef_names <- c(coef_main, coef_int)
-  
-  get_slope <- function(x) {
-    
-    g <- c(1, x)
-    
-    slope <- sum(b[coef_names] * g)
-    
-    se <- as.numeric(sqrt(t(g) %*% V[coef_names, coef_names] %*% g))
-    
-    c(slope = slope, se = se)
-  }
-  
-  out <- do.call(rbind, lapply(var_seq, get_slope))
-  
-  data.frame(
-    x = var_seq,
-    slope = out[, "slope"],
-    lower = out[, "slope"] - 1.96 * out[, "se"],
-    upper = out[, "slope"] + 1.96 * out[, "se"],
-    variable = label
-  )
-}
-
-df_photo <- get_slope_df(
-  mod_final_off_m_uni,
-  "photo_tw90",
-  photo_seq,
-  "Photoperiod"
-)
-
-
-df_pred <- get_slope_df(
-  mod_final_off_m_uni,
-  "clim_predictability_tw90",
-  pred_seq,
-  "Temperature stability"
-)
-
-df_auto <- get_slope_df(
-  mod_final_off_m_uni,
-  "clim_autocorr_tw90",
-  auto_seq,
-  "Temperature autocorrelation"
-)
-
-df_back <- get_slope_df(
-  mod_final_off_m_uni,
-  "clim_background_tw90",
-  back_seq,
-  "Mean temperature"
-)
-
-# combine data frames
-
-df_all <- dplyr::bind_rows(
-  df_photo,
-  df_back,
-  df_pred,
-  df_auto
-)
-
-# order facets
-
-df_all$variable <- factor(
-  df_all$variable,
-  levels = c(
-    "Photoperiod",
-    "Mean temperature",
-    "Temperature stability",
-    "Temperature autocorrelation"
-  )
-)
-
-# plot
-
-univoltine_offset_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = variable, fill = variable)) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.15, color = NA) +
-  
-  geom_line(size = 0.8, alpha = 0.6) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
-  
-  scale_color_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-    
-  )) +
-  
-  scale_fill_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-  )) +
-  
-  coord_cartesian(ylim = c(-6, -1)) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of offset vs temperature anomaly)",
-    color = "",
-    fill = ""
-  )
-univoltine_offset_plasticity_interactions_plot
-
-
-ggsave(
-  filename = here("output", "figures", "univoltine_offset_plasticity_interactions_plot.png"),
-  plot = univoltine_offset_plasticity_interactions_plot,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
-
-
-# ------------ Multivoltine species -------------- #
-
-mod_final_off_m_multi <- lmer(
-  OFFSET_mean ~ ONSET_mean + clim_anomaly_tw90 *
-    (photo_tw90 +
-       clim_background_tw90 +
-       clim_predictability_tw90
-     + clim_autocorr_tw90) +
-    (1 | SITE_ID) +
-    (1 + clim_anomaly_tw90 | SPECIES),
-  data = d_off_m |> dplyr::filter(voltinism == "multivoltine"),
-  REML = FALSE,
-  control = lmerControl(
-    optimizer = "bobyqa",
-    optCtrl = list(maxfun = 2e6)
-  )
-)
-
-summary(mod_final_off_m_multi)
-performance::check_collinearity(mod_final_off_m_multi)
-
-# sequences for predictor variables
-
-photo_seq <- seq(-2, 2, length.out = 100)
-trend_seq    <- seq(-2, 2, length.out = 100)
-pred_seq  <- seq(-2, 2, length.out = 100)
-auto_seq  <- seq(-2, 2, length.out = 100)
-back_seq  <- seq(-2, 2, length.out = 100)
-
-
-# get slopes of plasticity across gradients
-
-get_slope_df <- function(mod, var_name, var_seq, label,
-                         anomaly_name = "clim_anomaly_tw90") {
-  
-  b <- fixef(mod)
-  V <- vcov(mod)
-  
-  coef_main <- anomaly_name
-  
-  coef_int <- paste0(coef_main, ":", var_name)
-  if (!coef_int %in% names(b)) {
-    coef_int <- paste0(var_name, ":", coef_main)
-  }
-  
-  if (!all(c(coef_main, coef_int) %in% names(b))) {
-    stop(paste("No s'han trobat coeficients per:", var_name))
-  }
-  
-  coef_names <- c(coef_main, coef_int)
-  
-  get_slope <- function(x) {
-    
-    g <- c(1, x)
-    
-    slope <- sum(b[coef_names] * g)
-    
-    se <- as.numeric(sqrt(t(g) %*% V[coef_names, coef_names] %*% g))
-    
-    c(slope = slope, se = se)
-  }
-  
-  out <- do.call(rbind, lapply(var_seq, get_slope))
-  
-  data.frame(
-    x = var_seq,
-    slope = out[, "slope"],
-    lower = out[, "slope"] - 1.96 * out[, "se"],
-    upper = out[, "slope"] + 1.96 * out[, "se"],
-    variable = label
-  )
-}
-
-df_photo <- get_slope_df(
-  mod_final_off_m_multi,
-  "photo_tw90",
-  photo_seq,
-  "Photoperiod"
-)
-
-
-df_pred <- get_slope_df(
-  mod_final_off_m_multi,
-  "clim_predictability_tw90",
-  pred_seq,
-  "Temperature stability"
-)
-
-df_auto <- get_slope_df(
-  mod_final_off_m_multi,
-  "clim_autocorr_tw90",
-  auto_seq,
-  "Temperature autocorrelation"
-)
-
-df_back <- get_slope_df(
-  mod_final_off_m_multi,
-  "clim_background_tw90",
-  back_seq,
-  "Mean temperature"
-)
-
-# combine data frames
-
-df_all <- dplyr::bind_rows(
-  df_photo,
-  df_back,
-  df_pred,
-  df_auto
-)
-
-# order facets
-
-df_all$variable <- factor(
-  df_all$variable,
-  levels = c(
-    "Photoperiod",
-    "Mean temperature",
-    "Temperature stability",
-    "Temperature autocorrelation"
-  )
-)
-
-# plot
-
-multivoltine_offset_plasticity_interactions_plot <- ggplot(df_all, aes(x, slope, color = variable, fill = variable)) +
-  
-  geom_ribbon(aes(ymin = lower, ymax = upper),
-              alpha = 0.15, color = NA) +
-  
-  geom_line(size = 0.8, alpha = 0.6) +
-  
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
-  
-  scale_color_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-    
-  )) +
-  
-  scale_fill_manual(values = c(
-    "Photoperiod" = "#1b9e77",
-    "Mean temperature" = "#d95f02",
-    "Temperature stability" = "#7570b3",
-    "Temperature autocorrelation" = "#E6AB02"
-  )) +
-  
-  coord_cartesian(ylim = c(-4.5, 9)) +
-  
-  theme_classic(base_family = "Garamond", base_size = 16) +
-  
-  labs(
-    x = "Environmental gradient",
-    y = "Phenological plasticity\n(slope of offset vs temperature anomaly)",
-    color = "",
-    fill = ""
-  )
-multivoltine_offset_plasticity_interactions_plot
-
-
-ggsave(
-  filename = here("output", "figures", "multivoltine_offset_plasticity_interactions_plot.png"),
-  plot = multivoltine_offset_plasticity_interactions_plot,
-  width = 7,
-  height = 5,
-  dpi = 300
-)
