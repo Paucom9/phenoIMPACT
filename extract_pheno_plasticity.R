@@ -410,7 +410,7 @@ onset_res <- fit_extract_contextual_plasticity(
     "photo_tw60",
     "clim_background_tw60",
     "clim_predictability_tw60",
-    "clim_autocorr_tw60"
+    "clim_trend_tw60"
   ),
   plasticity_name = "onset_advancement_plasticity_contextual",
   invert_slope = TRUE,
@@ -437,7 +437,7 @@ offset_uni_res <- fit_extract_contextual_plasticity(
     "photo_tw90",
     "clim_background_tw90",
     "clim_predictability_tw90",
-    "clim_autocorr_tw90"
+    "clim_trend_tw90"
   ),
   control_vars = "ONSET_mean",
   plasticity_name = "offset_univoltine_termination_plasticity_contextual",
@@ -465,7 +465,7 @@ offset_multi_res <- fit_extract_contextual_plasticity(
     "photo_tw90",
     "clim_background_tw90",
     "clim_predictability_tw90",
-    "clim_autocorr_tw90"
+    "clim_trend_tw90"
   ),
   control_vars = "ONSET_mean",
   plasticity_name = "offset_multivoltine_delay_plasticity_contextual",
