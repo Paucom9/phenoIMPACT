@@ -37,22 +37,152 @@ library(here)
 
 #### Data Import and Preparation ####
 # ---
+
 here::here() # Check the current working directory
-# ---
-phenology_estimates  <- read.csv(here::here("output", "pheno_estimates_allspp.csv"), sep = ",", dec = ".")
-clim_vars <- read.csv(here::here("output", "climate", "climate_variables_all_phenophases.csv"), sep = ",", dec = ".")
-ebms_transect_coord <- read.csv(here::here("data", "ebms_transect_coord.csv"), sep = ",", dec = ".")
-voltinism <- read.csv(here::here("data", "voltinism", "species_country_voltinism.csv"), sep = ";", dec = ".")
 
+phenology_estimates <- read.csv(
+  here::here("output", "pheno_estimates_allspp.csv"),
+  sep = ",",
+  dec = "."
+)
 
-# ---
+phenology_sampling_support <- read.csv(
+  here::here("output", "phenology_sampling_support_allspp.csv"),
+  sep = ",",
+  dec = "."
+)
 
-# Merge datasets #
+clim_vars <- read.csv(
+  here::here("output", "climate", "climate_variables_all_phenophases.csv"),
+  sep = ",",
+  dec = "."
+)
+
+ebms_transect_coord <- read.csv(
+  here::here("data", "ebms_transect_coord.csv"),
+  sep = ",",
+  dec = "."
+)
+
+voltinism <- read.csv(
+  here::here("data", "voltinism", "species_country_voltinism.csv"),
+  sep = ";",
+  dec = "."
+)
+
+# ---------------------------------------------------------------------------- #
+#### Prepare phenology estimates + sampling support ####
+# ---------------------------------------------------------------------------- #
+
+phenology_estimates <- phenology_estimates |>
+  dplyr::mutate(
+    ID = as.character(ID),
+    YEAR = as.integer(YEAR),
+    SPECIES = as.character(SPECIES),
+    SITE_ID = as.character(SITE_ID)
+  )
+
+phenology_sampling_support <- phenology_sampling_support |>
+  dplyr::mutate(
+    ID = as.character(ID),
+    YEAR = as.integer(YEAR),
+    SPECIES = as.character(SPECIES),
+    SITE_ID = as.character(SITE_ID)
+  ) |>
+  # Drop bms_id here to avoid duplicated bms_id columns after joining climate data
+  dplyr::select(-dplyr::any_of("bms_id"))
+
+phenology_estimates <- phenology_estimates |>
+  dplyr::left_join(
+    phenology_sampling_support,
+    by = c("ID", "YEAR", "SPECIES", "SITE_ID")
+  ) |>
+  dplyr::mutate(
+    
+    # Boundary estimates outside the real sampling window
+    onset_before_first_visit = dplyr::case_when(
+      !is.na(ONSET_mean) & !is.na(first_visit_doy) ~
+        ONSET_mean < first_visit_doy,
+      TRUE ~ NA
+    ),
+    
+    offset_after_last_visit = dplyr::case_when(
+      !is.na(OFFSET_mean) & !is.na(last_visit_doy) ~
+        OFFSET_mean > last_visit_doy,
+      TRUE ~ NA
+    ),
+    
+    # Gaps between estimated boundaries and observed occurrences
+    gap_onset_first_obs = dplyr::case_when(
+      !is.na(ONSET_mean) & !is.na(first_obs_doy) ~
+        first_obs_doy - ONSET_mean,
+      TRUE ~ NA_real_
+    ),
+    
+    gap_last_obs_offset = dplyr::case_when(
+      !is.na(OFFSET_mean) & !is.na(last_obs_doy) ~
+        OFFSET_mean - last_obs_doy,
+      TRUE ~ NA_real_
+    ),
+    
+    # Relaxed quality criteria: at least one observed zero
+    onset_supported_1zero =
+      !is.na(ONSET_mean) &
+      n_zero_visits_before_first_obs >= 1 &
+      onset_before_first_visit == FALSE,
+    
+    offset_supported_1zero =
+      !is.na(OFFSET_mean) &
+      n_zero_visits_after_last_obs >= 1 &
+      offset_after_last_visit == FALSE,
+    
+    boundaries_supported_1zero =
+      onset_supported_1zero & offset_supported_1zero,
+    
+    # Strict quality criteria: at least two observed zeros
+    onset_supported_2zero =
+      !is.na(ONSET_mean) &
+      n_zero_visits_before_first_obs >= 2 &
+      onset_before_first_visit == FALSE,
+    
+    offset_supported_2zero =
+      !is.na(OFFSET_mean) &
+      n_zero_visits_after_last_obs >= 2 &
+      offset_after_last_visit == FALSE,
+    
+    boundaries_supported_2zero =
+      onset_supported_2zero & offset_supported_2zero
+  )
+
+# Check that sampling support joined correctly
+sampling_join_check <- phenology_estimates |>
+  dplyr::summarise(
+    n_rows = dplyr::n(),
+    n_with_sampling_support = sum(!is.na(n_visits_site_year)),
+    prop_with_sampling_support = n_with_sampling_support / n_rows,
+    prop_onset_supported_1zero = mean(onset_supported_1zero, na.rm = TRUE),
+    prop_offset_supported_1zero = mean(offset_supported_1zero, na.rm = TRUE),
+    prop_boundaries_supported_1zero = mean(boundaries_supported_1zero, na.rm = TRUE)
+  )
+
+sampling_join_check
+
+# ---------------------------------------------------------------------------- #
+#### Merge datasets ####
+# ---------------------------------------------------------------------------- #
+
 # Site coordinates + BMS identity
 coords_sf <- ebms_transect_coord |>
-  dplyr::filter(!is.na(transect_lon),
-                !is.na(transect_lat)) |>
-  dplyr::distinct(bms_id, transect_id, transect_lon, transect_lat) |>
+  dplyr::filter(
+    !is.na(transect_lon),
+    !is.na(transect_lat)
+  ) |>
+  dplyr::distinct(
+    bms_id,
+    transect_id,
+    transect_lon,
+    transect_lat
+  ) |>
   sf::st_as_sf(
     coords = c("transect_lon", "transect_lat"),
     crs = 3035
@@ -60,7 +190,9 @@ coords_sf <- ebms_transect_coord |>
   sf::st_transform(4326)
 
 coord_site <- coords_sf |>
-  dplyr::mutate(latitude = sf::st_coordinates(coords_sf)[, 2]) |>
+  dplyr::mutate(
+    latitude = sf::st_coordinates(coords_sf)[, 2]
+  ) |>
   sf::st_drop_geometry() |>
   dplyr::select(
     SITE_ID = transect_id,
@@ -72,7 +204,9 @@ coord_site <- coords_sf |>
 clim_vars <- clim_vars |>
   dplyr::select(-dplyr::any_of("bms_id")) |>
   dplyr::left_join(coord_site, by = "SITE_ID") |>
-  dplyr::mutate(latitude = as.numeric(scale(latitude)))
+  dplyr::mutate(
+    latitude = as.numeric(scale(latitude))
+  )
 
 # Voltinism in long format
 voltinism_long <- voltinism |>
@@ -89,7 +223,7 @@ voltinism_long <- voltinism |>
     )
   )
 
-# Merge phenology + climate + voltinism
+# Merge phenology + sampling support + climate + voltinism
 df <- phenology_estimates |>
   dplyr::left_join(
     clim_vars,
@@ -107,6 +241,14 @@ df <- phenology_estimates |>
     sp_site = interaction(SPECIES, SITE_ID, drop = TRUE)
   )
 
+# Optional check
+df |>
+  dplyr::summarise(
+    n_rows = dplyr::n(),
+    prop_onset_supported_1zero = mean(onset_supported_1zero, na.rm = TRUE),
+    prop_offset_supported_1zero = mean(offset_supported_1zero, na.rm = TRUE),
+    prop_boundaries_supported_1zero = mean(boundaries_supported_1zero, na.rm = TRUE)
+  )
 
 # ------------------------------------------------------------------------------------- #
 #### Data exploration #### 
@@ -1189,3 +1331,103 @@ res_offset_multi$plots_all_windows[["30"]]
 res_offset_multi$plots_all_windows[["60"]]
 res_offset_multi$plots_all_windows[["90"]]
 
+
+# ---------------------------------------------------------------------------- #
+#### Sensitivity analysis: sampling support 1 zero ####
+# ---------------------------------------------------------------------------- #
+
+out_dir_sens_1zero <- here("output", "phenology_plasticity_sensitivity_1zero")
+
+
+# ---------------------------------------------------------------------------- #
+#### Onset mean - 1 zero before first observation ####
+# ---------------------------------------------------------------------------- #
+
+df_onset_mean_1zero <- df |>
+  dplyr::filter(
+    pheno_type == "ONSET_mean",
+    onset_supported_1zero
+  )
+
+res_onset_mean_1zero <- run_plasticity_protocol(
+  data = df_onset_mean_1zero,
+  response = "ONSET_mean",
+  output_prefix = "onset_mean_1zero",
+  windows = c(30, 60, 90),
+  out_dir = out_dir_sens_1zero,
+  random_cor = FALSE,
+  phenology_label = "onset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
+)
+
+res_onset_mean_1zero$best_window
+res_onset_mean_1zero$window_selection_table
+res_onset_mean_1zero$main_interaction_table
+res_onset_mean_1zero$consistency_windows
+res_onset_mean_1zero$plots_all_windows[["30"]]
+res_onset_mean_1zero$plots_all_windows[["60"]]
+res_onset_mean_1zero$plots_all_windows[["90"]]
+
+# ---------------------------------------------------------------------------- #
+#### Offset mean - univoltine - 1 zero after last observation ####
+# ---------------------------------------------------------------------------- #
+
+df_offset_uni_1zero <- df |>
+  dplyr::filter(
+    pheno_type == "OFFSET_mean",
+    voltinism == "univoltine",
+    offset_supported_1zero
+  )
+
+res_offset_uni_1zero <- run_plasticity_protocol(
+  data = df_offset_uni_1zero,
+  response = "OFFSET_mean",
+  output_prefix = "offset_mean_univoltine_1zero",
+  windows = c(30, 60, 90),
+  out_dir = out_dir_sens_1zero,
+  random_cor = FALSE,
+  phenology_label = "offset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
+)
+
+res_offset_uni_1zero$best_window
+res_offset_uni_1zero$window_selection_table
+res_offset_uni_1zero$main_interaction_table
+res_offset_uni_1zero$consistency_windows
+res_offset_uni_1zero$plots_all_windows[["30"]]
+res_offset_uni_1zero$plots_all_windows[["60"]]
+res_offset_uni_1zero$plots_all_windows[["90"]]
+
+
+# ---------------------------------------------------------------------------- #
+#### Offset mean - multivoltine - 1 zero after last observation ####
+# ---------------------------------------------------------------------------- #
+
+df_offset_multi_1zero <- df |>
+  dplyr::filter(
+    pheno_type == "OFFSET_mean",
+    voltinism == "multivoltine",
+    offset_supported_1zero
+  )
+
+res_offset_multi_1zero <- run_plasticity_protocol(
+  data = df_offset_multi_1zero,
+  response = "OFFSET_mean",
+  output_prefix = "offset_mean_multivoltine_1zero",
+  windows = c(30, 60, 90),
+  out_dir = out_dir_sens_1zero,
+  random_cor = FALSE,
+  phenology_label = "offset",
+  plot_ylim = NULL,
+  facet_plot = FALSE
+)
+
+res_offset_multi_1zero$best_window
+res_offset_multi_1zero$window_selection_table
+res_offset_multi_1zero$main_interaction_table
+res_offset_multi_1zero$consistency_windows
+res_offset_multi_1zero$plots_all_windows[["30"]]
+res_offset_multi_1zero$plots_all_windows[["60"]]
+res_offset_multi_1zero$plots_all_windows[["90"]]
