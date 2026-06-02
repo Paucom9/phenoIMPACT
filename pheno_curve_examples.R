@@ -80,8 +80,8 @@ min_total_count <- 10
 # Replace these if better examples are found.
 examples <- tibble::tribble(
   ~example_label,  ~SPECIES,                  ~SITE_ID,
-  "Univoltine",    "Maniola jurtina",          "UKBMS.1063",
-  "Multivoltine",  "Coenonympha pamphilus",    "DEBMS.75890"
+  "Univoltine",    "Anthocharis cardamines",          "ES-CTBMS.5",
+  "Multivoltine",  "Lysandra bellargus",    "UKBMS.93"
 )
 
 # ---------------------------------------------------------------------------- #
@@ -426,8 +426,8 @@ fig1b_pheno_anomaly_curves <- ggplot() +
       colour = anomaly
     ),
     linetype = "dashed",
-    linewidth = 0.35,
-    alpha = 0.30,
+    linewidth = 0.5,
+    alpha = 0.4,
     show.legend = FALSE
   ) +
   # Fitted GAM curves coloured by thermal anomaly
@@ -439,8 +439,8 @@ fig1b_pheno_anomaly_curves <- ggplot() +
       group = interaction(example_label, YEAR),
       colour = anomaly
     ),
-    linewidth = 1.15,
-    alpha = 0.95
+    linewidth = 1,
+    alpha = 0.8
   ) +
   facet_wrap(
     ~ example_label,
@@ -464,8 +464,8 @@ fig1b_pheno_anomaly_curves <- ggplot() +
     expand = expansion(mult = c(0.02, 0.12))
   ) +
   labs(
-    x = "Day of year",
-    y = "Predicted butterfly count"
+    x = "",
+    y = "Butterfly count"
   ) +
   theme_classic(
     base_family = "Garamond",
@@ -525,12 +525,6 @@ ggsave(
   dpi = 600
 )
 
-ggsave(
-  filename = file.path(out_fig_dir, "fig1b_pheno_curves_temperature_anomaly.pdf"),
-  plot = fig1b_pheno_anomaly_curves,
-  width = 5.8,
-  height = 6.5
-)
 
 # ============================================================================================ #
 # End of script
