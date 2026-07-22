@@ -72,16 +72,16 @@ climate_pheno_type <- "ONSET_mean"
 n_years_to_plot <- 20
 
 # Minimum data quality for candidate years
-min_visits <- 25
-min_positive_dates <- 6
-min_total_count <- 10
+min_visits <- 15
+min_positive_dates <- 3
+min_total_count <- 5
 
 # Examples: one univoltine and one multivoltine population.
 # Replace these if better examples are found.
 examples <- tibble::tribble(
   ~example_label,  ~SPECIES,                  ~SITE_ID,
-  "Univoltine",    "Anthocharis cardamines",          "ES-CTBMS.5",
-  "Multivoltine",  "Lysandra bellargus",    "UKBMS.93"
+  "Univoltine",    "Anthocharis cardamines", "ES-CTBMS.5",
+  "Multivoltine",  "Lysandra bellargus",    "UKBMS.2010"
 )
 
 # ---------------------------------------------------------------------------- #
@@ -417,6 +417,18 @@ boundaries_df <- dplyr::bind_rows(lapply(curve_list, `[[`, "boundaries"))
 #### Plot panel B ####
 # ---------------------------------------------------------------------------- #
 
+facet_order <- c("Univoltine", "Multivoltine")
+
+predicted_df <- predicted_df |>
+  dplyr::mutate(
+    example_label = factor(example_label, levels = facet_order)
+  )
+
+boundaries_df <- boundaries_df |>
+  dplyr::mutate(
+    example_label = factor(example_label, levels = facet_order)
+  )
+
 fig1b_pheno_anomaly_curves <- ggplot() +
   # Onset and offset for each selected year
   geom_vline(
@@ -452,7 +464,7 @@ fig1b_pheno_anomaly_curves <- ggplot() +
     mid = "grey85",
     high = "#B2182B",
     midpoint = 0,
-    name = "Temperature\nanomaly (°C)"
+    name = "Temperature anomaly (°C)"
   ) +
   scale_x_continuous(
     limits = c(60, 304),
@@ -464,7 +476,7 @@ fig1b_pheno_anomaly_curves <- ggplot() +
     expand = expansion(mult = c(0.02, 0.12))
   ) +
   labs(
-    x = "",
+    x = NULL,
     y = "Butterfly count"
   ) +
   theme_classic(
@@ -488,28 +500,36 @@ fig1b_pheno_anomaly_curves <- ggplot() +
       fill = NA,
       linewidth = 0.5
     ),
-    legend.position = "right",
+    panel.spacing = grid::unit(0.2, "cm"),
+    
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+    legend.justification = "center",
+    
     legend.title = element_text(
       face = "bold",
-      size = 10
+      size = 10,
+      hjust = 0.5
     ),
     legend.text = element_text(
-      size = 8
+      size = 10
     ),
-    panel.spacing = grid::unit(0.7, "cm"),
+    legend.margin = margin(t = 2, r = 2, b = 2, l = 2),
+    
     plot.margin = margin(5, 5, 5, 5)
   ) +
   guides(
     colour = guide_colourbar(
-      barheight = grid::unit(3.0, "cm"),
-      barwidth = grid::unit(0.35, "cm"),
+      direction = "horizontal",
+      barheight = grid::unit(0.35, "cm"),
+      barwidth  = grid::unit(4.0, "cm"),
       title.position = "top",
       title.hjust = 0.5
     )
   )
 
 fig1b_pheno_anomaly_curves
-
 # ---------------------------------------------------------------------------- #
 #### Save figure ####
 # ---------------------------------------------------------------------------- #
@@ -520,8 +540,8 @@ dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
 ggsave(
   filename = file.path(out_fig_dir, "fig1b_pheno_curves_temperature_anomaly.png"),
   plot = fig1b_pheno_anomaly_curves,
-  width = 5.8,
-  height = 6.5,
+  width = 5.5,
+  height = 7.2,
   dpi = 600
 )
 

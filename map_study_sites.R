@@ -258,7 +258,7 @@ fig1a_map_clean <- ggplot() +
     name = "No. species",
     guide = guide_colourbar(
       barheight = grid::unit(2.2, "cm"),
-      barwidth  = grid::unit(0.35, "cm"),
+      barwidth  = grid::unit(0.5, "cm"),
       title.position = "top",
       title.hjust = 0.5
     )
@@ -319,7 +319,7 @@ fig1a_map_clean <- ggplot() +
       size = 10
     ),
     legend.text = element_text(
-      size = 8
+      size = 10
     ),
     legend.margin = margin(4, 5, 4, 5),
     legend.spacing.y = grid::unit(0.1, "cm"),
