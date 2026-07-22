@@ -1,5 +1,5 @@
 # ============================================================================================ #
-# pheno_curve_examples_temperature_anomaly.R
+# pheno_curve_examples.R
 #
 # Author: Pau Colom
 # Date: 2026-06-01
