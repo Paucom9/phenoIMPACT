@@ -1431,3 +1431,102 @@ res_offset_multi_1zero$consistency_windows
 res_offset_multi_1zero$plots_all_windows[["30"]]
 res_offset_multi_1zero$plots_all_windows[["60"]]
 res_offset_multi_1zero$plots_all_windows[["90"]]
+
+
+# ---------------------------------------------------------------------------- #
+#### Save main models and matched data for residual diagnostics ####
+# ---------------------------------------------------------------------------- #
+
+make_diagnostic_bundle_entry <- function(
+    result,
+    response,
+    analysis_label,
+    source_data) {
+  
+  model_data <- make_complete_data(
+    data = source_data,
+    response = response,
+    windows = c(30, 60, 90),
+    include_autocorr = FALSE
+  )
+  
+  list(
+    analysis = analysis_label,
+    response = response,
+    best_window = result$best_window,
+    model = result$main_model,
+    data = model_data
+  )
+}
+
+site_coordinates_diagnostics <- ebms_transect_coord |>
+  dplyr::transmute(
+    SITE_ID = as.character(transect_id),
+    bms_id = as.character(bms_id),
+    x_3035 = as.numeric(transect_lon),
+    y_3035 = as.numeric(transect_lat)
+  ) |>
+  dplyr::filter(
+    !is.na(SITE_ID),
+    !is.na(bms_id),
+    is.finite(x_3035),
+    is.finite(y_3035)
+  ) |>
+  dplyr::distinct(SITE_ID, bms_id, .keep_all = TRUE)
+
+plasticity_main_models <- list(
+  created_at = as.character(Sys.time()),
+  
+  primary = list(
+    onset = make_diagnostic_bundle_entry(
+      res_onset_mean, "ONSET_mean", "primary", df_onset_mean
+    ),
+    first_peak = make_diagnostic_bundle_entry(
+      res_first_peak, "FIRST_PEAK", "primary", df_first_peak
+    ),
+    offset_univoltine = make_diagnostic_bundle_entry(
+      res_offset_uni, "OFFSET_mean", "primary", df_offset_uni
+    ),
+    offset_multivoltine = make_diagnostic_bundle_entry(
+      res_offset_multi, "OFFSET_mean", "primary", df_offset_multi
+    )
+  ),
+  
+  sensitivity_1zero = list(
+    onset = make_diagnostic_bundle_entry(
+      res_onset_mean_1zero,
+      "ONSET_mean",
+      "sensitivity_1zero",
+      df_onset_mean_1zero
+    ),
+    offset_univoltine = make_diagnostic_bundle_entry(
+      res_offset_uni_1zero,
+      "OFFSET_mean",
+      "sensitivity_1zero",
+      df_offset_uni_1zero
+    ),
+    offset_multivoltine = make_diagnostic_bundle_entry(
+      res_offset_multi_1zero,
+      "OFFSET_mean",
+      "sensitivity_1zero",
+      df_offset_multi_1zero
+    )
+  ),
+  
+  site_coordinates = site_coordinates_diagnostics,
+  session_info = capture.output(sessionInfo())
+)
+
+diagnostic_rds <- here::here(
+  "output",
+  "phenology_plasticity",
+  "plasticity_main_models.rds"
+)
+
+saveRDS(
+  plasticity_main_models,
+  file = diagnostic_rds,
+  compress = "gzip"
+)
+
+message("Saved model bundle for diagnostics: ", diagnostic_rds)

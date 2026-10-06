@@ -2,6 +2,7 @@
 # DATA (never track raw data)
 # ===============================
 data/
+r_libraries/
 data_raw/
 data_processed/
 output/
