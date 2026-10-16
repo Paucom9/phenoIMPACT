@@ -783,7 +783,8 @@ pheno_geo_mundlak <- local({
       sys.source(engine, envir = e)
       e$worker(cfg)
     }, args = list(cfg$engine, cfg), libpath = cfg$libpath, stdout = log, stderr = "2>&1",
-      supervise = FALSE, user_profile = FALSE, system_profile = FALSE, wd = project_root,
+      supervise = FALSE, cleanup = FALSE, cleanup_tree = FALSE, poll_connection = FALSE,
+      user_profile = FALSE, system_profile = FALSE, wd = project_root,
       env = c(callr::rcmd_safe_env(), OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1"))
     # Until ownership metadata is saved, a failed launch must kill its controller.
     on.exit(if (!launched) try(child$kill_tree(), silent = TRUE), add = TRUE)
