@@ -1,9 +1,9 @@
 # phenoIMPACT | Direct geographic patterns of phenological plasticity
-# 2026-10-16 | 1.0.0
+# 2026-10-20 | 1.1.0
 #
 # source("geography_mundlak_by_voltinism_qc_final.R", encoding = "UTF-8")
 # pheno_geo_mundlak$preflight()  # small metadata only; safe during other fits
-# geo_job <- pheno_geo_mundlak$run()  # AFTER all four environmental fits finish
+# geo_job <- pheno_geo_mundlak$run()  # AFTER all four selected sources pass QC and workers stop
 # pheno_geo_mundlak$status()
 #
 # Four Gaussian ML models: onset/offset x uni/multivoltine.
@@ -23,9 +23,11 @@
 # Completed fits are reused; a saved fit can be re-exported without refitting.
 # An interrupted optimization without a saved fit restarts from its initial values.
 # Numerical FIT_OK is not a substitute for residual/model diagnostics.
+# Preflight recognizes v1/v2 refinements and isolated workers using small metadata.
+# See README_geography_checker_CA.md. Loading this script never starts a fit.
 
 pheno_geo_mundlak <- local({
-  VERSION <- "geography_mundlak_by_voltinism_qc_final_15km_1.0.0"
+  VERSION <- "geography_mundlak_by_voltinism_qc_final_15km_1.1.0"
   SOURCE_VERSION <- "environment_mundlak_by_voltinism_qc_final_15km_2.1_resilient"
   ROOT <- "E:/phenoIMPACT project/code/phenoIMPACT"
   ENV_RELATIVE <- file.path("output", "phenology_plasticity",
@@ -33,6 +35,7 @@ pheno_geo_mundlak <- local({
   OUTPUT_NAME <- "geography_mundlak_by_voltinism_qc_final_15km"
   ANALYSES <- c("offset_multivoltine", "onset_multivoltine",
                 "offset_univoltine", "onset_univoltine")
+  V2_ANALYSES <- c("offset_univoltine", "onset_multivoltine", "onset_univoltine")
   GEO_VARS <- c("latitude_within_species_10deg", "latitude_species_mean_10deg",
                 "longitude_within_species_10deg", "longitude_species_mean_10deg")
   state <- new.env(parent = emptyenv())
@@ -105,42 +108,110 @@ pheno_geo_mundlak <- local({
   }
 
   pid_alive <- function(pid, create_time) {
-    if (is.null(pid) || is.null(create_time)) return(FALSE)
+    need(is.numeric(pid) && length(pid) == 1L && is.finite(pid) &&
+      pid > 0 && pid == floor(pid) && length(create_time) == 1L &&
+      is.finite(as.numeric(create_time)), "Invalid worker ownership metadata.")
     tryCatch({
       h <- ps::ps_handle(pid)
-      isTRUE(ps::ps_is_running(h)) && isTRUE(all.equal(
-        as.numeric(ps::ps_create_time(h)), as.numeric(create_time), tolerance = 1e-6))
-    }, error = function(e) FALSE)
+      isTRUE(ps::ps_is_running(h)) && isTRUE(abs(
+        as.numeric(ps::ps_create_time(h)) - as.numeric(create_time)) < 0.001)
+    }, error = function(e) {
+      if (inherits(e, "no_such_process")) return(FALSE)
+      stop("Cannot verify worker process: ", conditionMessage(e), call. = FALSE)
+    })
   }
 
-  active_jobs <- function(project_root) {
+  active_owner <- function(path) {
+    owner <- read_small(path)
+    need(is.list(owner), paste("Invalid worker ownership metadata:", path))
+    pid_alive(owner$pid, owner$create_time)
+  }
+
+  refinement_roots <- function(environment_run) {
+    v1 <- file.path(environment_run, "postfit_refinement_queue_v1")
+    v2 <- file.path(environment_run, "postfit_refinement_queue_v2_isolated")
+    config_files <- character()
+    check_source <- function(path) {
+      cfg <- read_small(path)
+      need(is.character(cfg$source_run) && length(cfg$source_run) == 1L &&
+        !is.na(cfg$source_run) && identical(
+          normalizePath(cfg$source_run, winslash = "/", mustWork = TRUE),
+          normalizePath(environment_run, winslash = "/", mustWork = TRUE)),
+        "Refinement configuration belongs to a different environmental run.")
+      cfg
+    }
+    v2_config <- file.path(v2, "refinement_config.rds")
+    if (file.exists(v2_config)) {
+      cfg <- check_source(v2_config)
+      need(is.character(cfg$old_refinement) && length(cfg$old_refinement) == 1L &&
+        !is.na(cfg$old_refinement) && nzchar(cfg$old_refinement),
+        "V2 refinement configuration lacks its v1 source.")
+      v1 <- cfg$old_refinement
+      config_files <- c(config_files, v2_config)
+    }
+    v1_config <- file.path(v1, "refinement_config.rds")
+    if (file.exists(v1_config)) {
+      check_source(v1_config)
+      config_files <- c(config_files, v1_config)
+    }
+    list(v1 = v1, v2 = v2, config_files = config_files)
+  }
+
+  owner_files <- function(roots) {
+    unique(unlist(lapply(roots[dir.exists(roots)], function(root)
+      list.files(root, pattern = "^(worker|fit|isolated_worker)_owner\\.rds$",
+        recursive = TRUE, full.names = TRUE)), use.names = FALSE))
+  }
+
+  environmental_owner_files <- function(environment_run) {
+    roots <- refinement_roots(environment_run)
+    owner_files(c(environment_run, roots$v1, roots$v2))
+  }
+
+  require_environment_idle <- function(environment_run) {
+    paths <- environmental_owner_files(environment_run)
+    need(!any(vapply(paths, active_owner, logical(1))),
+      "An environmental/refinement worker is active (original, v1 or v2); no new fit launched.")
+  }
+
+  active_jobs <- function(project_root, environment_run = NULL) {
     need(requireNamespace("ps", quietly = TRUE), "Install ps for process checks.")
     found <- character()
     for (key in grep("pheno.*(job|active)", names(options()), value = TRUE)) {
       job <- getOption(key)
       alive <- tryCatch(!is.null(job$process) && job$process$is_alive(),
-                        error = function(e) FALSE)
+        error = function(e) stop("Cannot verify workflow option ", key, ": ",
+          conditionMessage(e), call. = FALSE))
       if (isTRUE(alive)) found <- c(found, paste("R option", key))
     }
-    for (folder in c("phenology_plasticity", "population_trends")) {
-      root <- file.path(project_root, "output", folder)
-      if (!dir.exists(root)) next
-      files <- list.files(root, pattern = "^(worker|fit)_owner\\.rds$",
-                          recursive = TRUE, full.names = TRUE)
-      for (f in files) {
-        owner <- tryCatch(read_small(f), error = function(e) NULL)
-        if (!is.null(owner) && pid_alive(owner$pid, owner$create_time))
-          found <- c(found, f)
-      }
+    files <- owner_files(file.path(project_root, "output",
+      c("phenology_plasticity", "population_trends")))
+    if (!is.null(environment_run))
+      files <- unique(c(files, environmental_owner_files(environment_run)))
+    for (f in files) {
+      # Corrupt/inaccessible ownership is not evidence that a worker stopped.
+      if (active_owner(f)) found <- c(found, f)
     }
     unique(found)
+  }
+
+  accepted_checks <- function(path) {
+    need(file.info(path)$size < 5 * 1024^2, paste("Unexpectedly large checks:", path))
+    z <- utils::read.csv(path, stringsAsFactors = FALSE)
+    is.data.frame(z) && nrow(z) == 1L &&
+      isTRUE(z$numerical_checks_ok) && isTRUE(z$convergence_code == 0L) &&
+      isTRUE(z$pdHess) && isTRUE(is.finite(z$max_abs_gradient)) &&
+      isTRUE(z$max_abs_gradient < 0.001)
   }
 
   source_status <- function(environment_run, require_complete = FALSE) {
     cfg <- read_small(file.path(environment_run, "run_config.rds"))
     need(identical(cfg$version, SOURCE_VERSION), "Unsupported environmental source version.")
     need(is.character(cfg$signature) && length(cfg$signature) == 1L &&
-           nzchar(cfg$signature), "Environmental source has no valid signature.")
+           !is.na(cfg$signature) && nzchar(cfg$signature),
+         "Environmental source has no valid signature.")
+    roots <- refinement_roots(environment_run)
+    v2_exists <- dir.exists(roots$v2)
     tab <- do.call(rbind, lapply(ANALYSES, function(a) {
       prep <- file.path(environment_run, a, "prepared_input.rds")
       completion <- file.path(environment_run, a, "completed.rds")
@@ -150,14 +221,77 @@ pheno_geo_mundlak <- local({
         need(is.character(done$status) && length(done$status) == 1L && !is.na(done$status),
              paste("Invalid source completion status:", a))
       }
-      data.frame(analysis = a, status = if (is.null(done)) "NOT_COMPLETED" else done$status,
-        prepared_available = file.exists(prep),
+      ref1 <- file.path(roots$v1, a)
+      ref2 <- file.path(roots$v2, a)
+      # Scheduled v2 models supersede v1 before the per-model directory exists.
+      # Offset multivoltine is carried forward from the v1 path in the v2 config.
+      refinement_version <- if (dir.exists(ref2) || (v2_exists && a %in% V2_ANALYSES)) {
+        "v2"
+      } else if (dir.exists(ref1) || (v2_exists && a == "offset_multivoltine")) {
+        "v1"
+      } else "none"
+      status <- if (is.null(done)) "NOT_COMPLETED" else done$status
+      kind <- "original"
+      fit <- file.path(environment_run, a, "fit_mundlak.rds")
+      checks <- file.path(environment_run, a, "fit_checks.csv")
+      marker <- completion
+      if (refinement_version != "none") {
+        kind <- "refined"
+        ref <- if (refinement_version == "v2") ref2 else ref1
+        fit <- file.path(ref, "fit_refined_final.rds")
+        checks <- file.path(ref, "fit_checks_refined.csv")
+        marker <- file.path(ref, "refinement_completed.rds")
+        status <- if (dir.exists(ref)) "REFINEMENT_NOT_COMPLETED" else "REFINEMENT_NOT_STARTED"
+        if (file.exists(marker)) {
+          z <- read_small(marker)
+          need(is.data.frame(z$summary) && nrow(z$summary) == 1L &&
+            identical(z$summary$analysis, a), paste("Refinement marker identity mismatch:", a))
+          status <- z$summary$refinement_status
+          need(is.character(status) && length(status) == 1L && !is.na(status),
+            paste("Invalid refinement status:", a))
+        }
+      }
+      all_files <- all(file.exists(c(completion, prep, fit, checks, marker)))
+      ready <- all_files &&
+        status %in% c("FIT_OK", "FIT_OK_REFINED", "FIT_OK_AFTER_REBUILD") &&
+        accepted_checks(checks)
+      data.frame(analysis = a, kind = kind, refinement_version = refinement_version,
+        status = status, ready = ready, prepared_available = file.exists(prep),
         prepared_MiB = if (file.exists(prep)) round(file.info(prep)$size / 1024^2, 1) else NA_real_,
+        prepared = prep, fit = fit, checks = checks, marker = marker,
+        original_marker = completion,
         stringsAsFactors = FALSE)
     }))
-    if (require_complete) need(all(tab$status == "FIT_OK" & tab$prepared_available),
-      "Wait until all four environmental sources are FIT_OK with prepared inputs; no fit was launched.")
-    list(config = cfg, table = tab)
+    if (require_complete) need(all(tab$ready),
+      "Wait until all four selected environmental sources pass numerical checks with prepared inputs; no fit was launched.")
+    files <- unique(c(file.path(environment_run, "run_config.rds"),
+      roots$config_files, tab$prepared, tab$original_marker, tab$marker, tab$checks))
+    list(config = cfg, table = tab, files = files)
+  }
+
+  file_manifest <- function(paths) {
+    paths <- unique(unname(normalizePath(paths, winslash = "/", mustWork = TRUE)))
+    z <- file.info(paths)
+    need(!anyNA(z$size) && all(!z$isdir), "Source file metadata unavailable.")
+    data.frame(path = paths, bytes = z$size, modified = as.numeric(z$mtime),
+      stringsAsFactors = FALSE)
+  }
+
+  require_sources_current <- function(cfg) {
+    require_environment_idle(cfg$environment_run)
+    src <- source_status(cfg$environment_run, require_complete = TRUE)
+    need(identical(src$table, cfg$source_selection) && identical(src$files, cfg$source_files),
+      "Environmental source selection changed after preflight; restart run().")
+    need(identical(file_manifest(c(src$files, src$table$fit)), cfg$source_manifest),
+      "An environmental source changed after preflight; restart run().")
+    invisible(TRUE)
+  }
+
+  available_resources <- function(project_root) {
+    mem <- ps::ps_system_memory()
+    disk <- ps::ps_disk_usage(project_root)
+    list(available_RAM_GiB = as.numeric(mem$avail) / 1024^3,
+      available_disk_GiB = as.numeric(disk$available[1]) / 1024^3)
   }
 
   preflight <- function(project_root = ROOT,
@@ -165,17 +299,18 @@ pheno_geo_mundlak <- local({
     project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
     environment_run <- normalizePath(environment_run, winslash = "/", mustWork = TRUE)
     src <- source_status(environment_run)
-    jobs <- active_jobs(project_root)
-    mem <- ps::ps_system_memory()
-    disk <- ps::ps_disk_usage(project_root)
-    out <- list(source = src$table, active_jobs = jobs,
-      available_RAM_GiB = as.numeric(mem$avail) / 1024^3,
-      available_disk_GiB = as.numeric(disk$available[1]) / 1024^3,
-      sources_ready = all(src$table$status == "FIT_OK" & src$table$prepared_available))
-    print(src$table, row.names = FALSE)
+    jobs <- active_jobs(project_root, environment_run)
+    out <- c(list(source = src$table, active_jobs = jobs,
+      sources_ready = all(src$table$ready)), available_resources(project_root))
+    out$resources_ready <- isTRUE(out$available_RAM_GiB >= 35) &&
+      isTRUE(out$available_disk_GiB >= 50)
+    out$ready <- out$sources_ready && !length(jobs) && out$resources_ready
+    print(src$table[c("analysis", "kind", "refinement_version", "status", "ready",
+      "prepared_available", "prepared_MiB")], row.names = FALSE)
     message("Available RAM: ", round(out$available_RAM_GiB, 1), " GiB; disk: ",
             round(out$available_disk_GiB, 1), " GiB.")
     if (length(jobs)) message("Active workflow(s):\n", paste(jobs, collapse = "\n"))
+    message("Sources ready: ", out$sources_ready, "; ready with default resource limits: ", out$ready)
     message("Metadata only: no prepared data or fitted models loaded; no process started.")
     invisible(out)
   }
@@ -559,6 +694,7 @@ pheno_geo_mundlak <- local({
   }
 
   fit_one <- function(cfg, analysis) {
+    require_sources_current(cfg)
     check_packages()
     resource_check(cfg$out, cfg$minimum_ram_GiB, cfg$minimum_disk_GiB)
     out <- file.path(cfg$out, analysis)
@@ -652,7 +788,7 @@ pheno_geo_mundlak <- local({
     nms <- ls(e, all.names = TRUE)
     funs <- nms[vapply(nms, function(nm) is.function(get(nm, e)), logical(1))]
     path <- file.path(out, "geography_mundlak_engine.R")
-    dump(c("VERSION", "SOURCE_VERSION", "ROOT", "ENV_RELATIVE", "OUTPUT_NAME", "ANALYSES",
+    dump(c("VERSION", "SOURCE_VERSION", "ROOT", "ENV_RELATIVE", "OUTPUT_NAME", "ANALYSES", "V2_ANALYSES",
            "GEO_VARS", funs), file = path, envir = e, control = "all")
     normalizePath(path, winslash = "/", mustWork = TRUE)
   }
@@ -672,10 +808,12 @@ pheno_geo_mundlak <- local({
         Sys.sleep(.1)
       }
       need(transferred, "Controller did not receive the launch lock.")
+      require_sources_current(cfg)
       need(identical(unname(tools::md5sum(cfg$source_files)), cfg$source_md5),
            "Source files changed after launch configuration.")
       statuses <- data.frame(analysis = character(), status = character())
       for (analysis in ANALYSES) {
+        require_sources_current(cfg)
         cached <- completed_cache_status(cfg, analysis)
         if (!is.null(cached)) {
           result <- cached
@@ -742,7 +880,7 @@ pheno_geo_mundlak <- local({
     project_root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
     environment_run <- normalizePath(environment_run, winslash = "/", mustWork = TRUE)
     src <- source_status(environment_run, require_complete = TRUE)
-    jobs <- active_jobs(project_root)
+    jobs <- active_jobs(project_root, environment_run)
     need(!length(jobs), paste("Another known phenoIMPACT workflow is active; no new fit launched:",
                              paste(jobs, collapse = "\n")))
     check_packages()
@@ -752,9 +890,8 @@ pheno_geo_mundlak <- local({
     lock <- acquire_launch_lock(out_root)
     launched <- FALSE
     on.exit(if (!launched) unlink(lock, recursive = TRUE), add = TRUE)
-    source_files <- c(file.path(environment_run, "run_config.rds"),
-      unlist(lapply(ANALYSES, function(a) file.path(environment_run, a,
-        c("prepared_input.rds", "completed.rds"))), use.names = FALSE))
+    source_files <- src$files
+    source_manifest <- file_manifest(c(source_files, src$table$fit))
     hashes <- unname(tools::md5sum(source_files))
     need(!anyNA(hashes), "Could not fingerprint source files.")
     e <- environment(run)
@@ -763,18 +900,22 @@ pheno_geo_mundlak <- local({
     code <- vapply(funs, function(nm) paste(deparse(get(nm, e)), collapse = "\n"), character(1))
     versions <- vapply(packages(), function(nm) as.character(utils::packageVersion(nm)), character(1))
     signature <- digest::digest(list(version = VERSION, source_signature = src$config$signature,
-      source_files = source_files, md5 = hashes, analyses = ANALYSES, variables = GEO_VARS,
+      source_files = source_files, md5 = hashes, selected_sources = src$table,
+      analyses = ANALYSES, variables = GEO_VARS,
       code = code, packages = versions), algo = "sha256")
     out <- file.path(out_root, paste0("run_", substr(signature, 1, 12)))
     dir.create(out, recursive = TRUE, showWarnings = FALSE)
     cfg <- list(version = VERSION, signature = signature, root = project_root,
       environment_run = environment_run, source_files = source_files, source_md5 = hashes,
+      source_selection = src$table, source_manifest = source_manifest,
       source_signature = src$config$signature, out = out, lock_dir = lock,
       minimum_ram_GiB = minimum_ram_GiB, minimum_disk_GiB = minimum_disk_GiB,
       libpath = .libPaths(), package_versions = versions)
+    require_sources_current(cfg)
     cfg$engine <- dump_engine(out)
     atomic_save(cfg, file.path(out, "run_config.rds"))
     csv(data.frame(file = source_files, md5 = hashes), file.path(out, "source_manifest.csv"))
+    csv(src$table, file.path(out, "environmental_source_selection.csv"))
     if (file.exists(file.path(out, "fatal_error.txt"))) unlink(file.path(out, "fatal_error.txt"))
     phase(cfg, "QUEUED", detail = paste(ANALYSES, collapse = " -> "))
     log <- file.path(out, paste0("controller_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".log"))
