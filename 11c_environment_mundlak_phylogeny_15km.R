@@ -1,8 +1,8 @@
 # phenoIMPACT | Phylogenetic sensitivity of the environmental Mundlak model (11b).
-# Version 1.0.0 | 2026-10-15. Loading defines functions; no analysis starts.
+# Version 1.1.0 | 2026-10-20. Loading defines functions; no analysis starts.
 # This models phenological dates, not the demographic response in script 10f.
-# One selected analysis at a time: onset, offset_univoltine, offset_multivoltine.
-# Requires its ALREADY FIT_OK independent environmental-Mundlak fit, version 1.1/1.2/1.3.
+# Four analyses: onset/offset x uni/multivoltine; one selected analysis at a time.
+# Requires an accepted by-voltinism 2.1 source, including v1/v2 refinements.
 # Reuses every row, scale, fixed interaction, IID random effect and the exact 15-km mesh.
 # Adds only an anomaly slope with covariance sigma_phylo^2 A alongside sigma_iid^2 I.
 # A retains the original-root Brownian covariance, normalized to diagonal one.
@@ -39,14 +39,14 @@ env_phylo_need <- function(ok, message) {
 
 env_phylo_spec <- function(analysis) {
   env_phylo_need(is.character(analysis) && length(analysis) == 1L &&
-    analysis %in% c("onset", "offset_univoltine", "offset_multivoltine"),
+    analysis %in% c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine"),
     "Select exactly one environmental-Mundlak analysis.")
-  window <- if (analysis == "onset") 60L else 90L
-  list(analysis = analysis, response = if (analysis == "onset") "ONSET_mean" else "OFFSET_mean",
-    window = window, anomaly = paste0("clim_anomaly_tw", window),
+  window <- if (startsWith(analysis, "onset_")) 60L else 90L
+  list(analysis = analysis, response = if (startsWith(analysis, "onset_")) "ONSET_mean" else "OFFSET_mean",
+    voltinism = sub("^(onset|offset)_", "", analysis), window = window, anomaly = paste0("clim_anomaly_tw", window),
     orientation = if (analysis == "offset_multivoltine") 1 else -1,
     orientation_label = if (analysis == "offset_multivoltine") "delay / extension" else "advancement",
-    control = if (analysis == "onset") character() else "ONSET_mean_z",
+    control = if (startsWith(analysis, "onset_")) character() else "ONSET_mean_z",
     moderators = c("photoperiod_within_species", "photoperiod_species_mean",
       "background_within_species", "background_species_mean",
       "predictability_within_species", "predictability_species_mean",
@@ -60,95 +60,20 @@ env_phylo_read_metadata <- function(path) {
   readRDS(path)
 }
 
-env_phylo_source_versions <- function() {
-  paste0("environment_mundlak_qc_final_spatial_15km_", c("1.1", "1.2", "1.3"))
+env_phylo_sources <- function(root) {
+  e <- new.env(parent = globalenv())
+  sys.source(file.path(root, "mundlak_phylogeny_sources.R"), envir = e)
+  e$pheno_mundlak_phylo_sources
 }
 
-env_phylo_audit_source_row <- function(directory, analysis, discovery_note = "") {
-  files <- c(source_checkpoint = file.path(directory, "fit_mundlak.rds"),
-    prepared_file = file.path(directory, "prepared_input.rds"),
-    completed_file = file.path(directory, "completed.rds"),
-    fit_checks_file = file.path(directory, "fit_checks.csv"),
-    run_config_file = file.path(dirname(directory), "run_config.rds"))
-  info <- file.info(files)
-  present <- stats::setNames(file.exists(files) & !is.na(info$isdir) & !info$isdir, names(files))
-  sizes <- as.numeric(info$size)
-  missing <- basename(files[!present])
-  empty <- basename(files[present & (is.na(sizes) | sizes <= 0)])
-  errors <- character()
-  issues <- if (nzchar(discovery_note)) discovery_note else character()
-  scalar_character <- function(x) if (is.character(x) && length(x) == 1L &&
-    !is.na(x) && nzchar(x)) x else NA_character_
-  read_metadata <- function(name) {
-    if (!isTRUE(present[[name]])) return(NULL)
-    tryCatch({
-      x <- env_phylo_read_metadata(files[[name]])
-      if (!is.list(x)) stop("Expected a metadata list.")
-      x
-    }, error = function(e) {
-      errors <<- c(errors, paste0(basename(files[[name]]), ": ", conditionMessage(e)))
-      NULL
-    })
-  }
-  config <- read_metadata("run_config_file")
-  done <- read_metadata("completed_file")
-  # Fitted-model and prepared-data RDS files are deliberately never opened.
-  checks <- if (isTRUE(present[["fit_checks_file"]])) tryCatch({
-    j <- match("fit_checks_file", names(files))
-    if (!is.finite(sizes[[j]]) || sizes[[j]] <= 0 || sizes[[j]] > 2 * 1024^2)
-      stop("Empty or oversized checks CSV.")
-    utils::read.csv(files[["fit_checks_file"]], stringsAsFactors = FALSE)
-  }, error = function(e) {
-    errors <<- c(errors, paste0("fit_checks.csv: ", conditionMessage(e)))
-    NULL
-  }) else NULL
-  source_version <- scalar_character(config$version)
-  status <- scalar_character(done$status)
-  run_signature <- scalar_character(config$signature)
-  completed_signature <- scalar_character(done$signature)
-  signature_valid <- !is.na(run_signature) && grepl("^[a-f0-9]{64}$", run_signature)
-  signature_match <- signature_valid && !is.na(completed_signature) &&
-    identical(config$signature, done$signature)
-  version_ok <- !is.na(source_version) && source_version %in% env_phylo_source_versions()
-  status_ok <- !is.na(status) && identical(status, "FIT_OK")
-  checks_rows <- if (is.data.frame(checks)) nrow(checks) else NA_integer_
-  numerical <- is.data.frame(checks) && nrow(checks) == 1L &&
-    isTRUE(checks$numerical_checks_ok)
-  if (length(missing)) issues <- c(issues, paste("missing files:", paste(missing, collapse = ", ")))
-  if (length(empty)) issues <- c(issues, paste("empty files:", paste(empty, collapse = ", ")))
-  if (length(errors)) issues <- c(issues, paste("metadata read errors:", paste(errors, collapse = " | ")))
-  if (!version_ok) issues <- c(issues, paste0("unsupported/missing source version: ",
-    if (is.na(source_version)) "[missing]" else source_version,
-    "; accepted scientific versions are 1.1, 1.2 and 1.3"))
-  if (!status_ok) issues <- c(issues, paste("completion requires FIT_OK; found",
-    if (is.na(status)) "[missing]" else status))
-  if (!signature_valid) issues <- c(issues, "run signature is missing or is not a 64-character SHA256")
-  if (!signature_match) issues <- c(issues, "run/completion signatures do not match")
-  if (!numerical) issues <- c(issues, "fit_checks.csv requires exactly one row with numerical_checks_ok=TRUE")
-  accepted <- !length(issues)
-  data.frame(analysis = analysis,
-    source_directory = normalizePath(directory, winslash = "/", mustWork = FALSE),
-    source_checkpoint = unname(files[["source_checkpoint"]]),
-    prepared_file = unname(files[["prepared_file"]]),
-    run_config_file = unname(files[["run_config_file"]]),
-    completed_file = unname(files[["completed_file"]]),
-    fit_checks_file = unname(files[["fit_checks_file"]]),
-    missing_files = paste(missing, collapse = "; "),
-    source_checkpoint_bytes = sizes[[1L]], prepared_bytes = sizes[[2L]],
-    completed_bytes = sizes[[3L]], fit_checks_bytes = sizes[[4L]], run_config_bytes = sizes[[5L]],
-    read_errors = paste(errors, collapse = " | "), version = source_version,
-    status = status, run_signature = run_signature, completed_signature = completed_signature,
-    run_signature_valid = signature_valid, signature_match = signature_match,
-    checks_rows = checks_rows, numerical_checks_ok = numerical,
-    accepted = accepted, reason = if (accepted) "metadata eligible; fitted arrays have not been read or validated" else
-      paste(unique(issues), collapse = "; "),
-    validation_scope = "metadata_eligibility_only", full_fit_validation_run = FALSE,
-    stringsAsFactors = FALSE, row.names = NULL)
-}
+env_phylo_source_versions <- function() "environment_mundlak_by_voltinism_qc_final_15km_2.1_resilient"
 
+env_phylo_audit_source_row <- function(directory, analysis, discovery_note = "", root) {
+  env_phylo_sources(root)$environment_row(root, dirname(directory), analysis, discovery_note)
+}
 env_phylo_audit_sources <- function(root, analysis = NULL, source_run = NULL) {
   root <- normalizePath(root, winslash = "/", mustWork = TRUE)
-  analyses <- c("onset", "offset_univoltine", "offset_multivoltine")
+  analyses <- c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine")
   if (!is.null(analysis)) {
     env_phylo_need(is.character(analysis) && length(analysis) > 0L &&
       !anyNA(analysis) && all(analysis %in% analyses), "Unknown environmental-Mundlak analysis.")
@@ -157,7 +82,7 @@ env_phylo_audit_sources <- function(root, analysis = NULL, source_run = NULL) {
   note <- ""
   explicit_analysis <- explicit_directory <- NULL
   if (is.null(source_run)) {
-    parent <- file.path(root, "output/phenology_plasticity/environment_mundlak_qc_final_15km")
+    parent <- file.path(root, "output/phenology_plasticity/environment_mundlak_by_voltinism_qc_final_15km")
     runs <- if (dir.exists(parent)) list.dirs(parent, recursive = FALSE, full.names = TRUE) else character()
     if (!length(runs)) {
       runs <- parent
@@ -168,7 +93,7 @@ env_phylo_audit_sources <- function(root, analysis = NULL, source_run = NULL) {
     env_phylo_need(is.character(source_run) && length(source_run) == 1L &&
       !is.na(source_run) && nzchar(source_run), "Invalid explicit independent source folder.")
     path <- normalizePath(source_run, winslash = "/", mustWork = FALSE)
-    if (basename(path) %in% c("onset", "offset_univoltine", "offset_multivoltine")) {
+    if (basename(path) %in% c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine")) {
       if (is.null(analysis)) analyses <- basename(path)
       explicit_analysis <- basename(path)
       explicit_directory <- path
@@ -179,7 +104,7 @@ env_phylo_audit_sources <- function(root, analysis = NULL, source_run = NULL) {
     row_note <- if (!is.null(explicit_analysis) && !identical(a, explicit_analysis))
       paste0("explicit source folder is for ", explicit_analysis, "; requested ", a) else note
     directory <- if (is.null(explicit_directory)) file.path(run, a) else explicit_directory
-    env_phylo_audit_source_row(directory, a, row_note)
+    env_phylo_audit_source_row(directory, a, row_note, root)
   }))
   result <- do.call(rbind, unlist(rows, recursive = FALSE))
   rownames(result) <- NULL
@@ -204,6 +129,9 @@ env_phylo_resolve_source <- function(root, analysis, source_run = NULL) {
   list(source_directory = row$source_directory[[1L]], source_checkpoint = row$source_checkpoint[[1L]],
     prepared_file = row$prepared_file[[1L]], completed_file = row$completed_file[[1L]],
     fit_checks_file = row$fit_checks_file[[1L]], run_config_file = row$run_config_file[[1L]],
+    original_completed_file = row$original_completed_file[[1L]],
+    environment_run = row$environment_run[[1L]], kind = row$kind[[1L]],
+    refinement_version = row$refinement_version[[1L]],
     analysis = analysis, source_version = row$version[[1L]], source_signature = row$run_signature[[1L]])
 }
 
@@ -230,13 +158,48 @@ env_phylo_data_equal <- function(x, y, columns) {
   }, logical(1)))
 }
 
+env_phylo_validate_identity <- function(cfg, resolved, run, done, prepared, saved) {
+  s <- env_phylo_spec(cfg$analysis)
+  env_phylo_need(identical(run$version, env_phylo_source_versions()) &&
+    identical(done$signature, run$signature) &&
+    identical(prepared$version, run$version) &&
+    identical(saved$analysis, cfg$analysis) && identical(prepared$analysis, cfg$analysis) &&
+    identical(prepared$spec$voltinism, s$voltinism) &&
+    identical(prepared$spec$anomaly, s$anomaly) &&
+    identical(prepared$spec$control, s$control),
+    "Independent Mundlak fit/prepared/run/completion identity mismatch.")
+  if (identical(resolved$kind, "refined")) {
+    mark <- env_phylo_read_metadata(resolved$completed_file)
+    env_phylo_need(identical(saved$source_signature, run$signature) &&
+      identical(normalizePath(saved$source_run, winslash = "/", mustWork = TRUE),
+        normalizePath(resolved$environment_run, winslash = "/", mustWork = TRUE)) &&
+      identical(saved$refinement_status, mark$summary$refinement_status) &&
+      identical(mark$summary$analysis, cfg$analysis) &&
+      saved$refinement_status %in% c("FIT_OK_REFINED", "FIT_OK_AFTER_REBUILD"),
+      "Refined environmental fit provenance/status mismatch.")
+  } else env_phylo_need(identical(saved$signature, run$signature) &&
+    identical(saved$version, run$version) && identical(done$status, "FIT_OK"),
+    "Original environmental fit identity/status mismatch.")
+  audit <- prepared$classification_audit
+  env_phylo_need(is.data.frame(audit) && nrow(audit) == 1L &&
+    identical(audit$group, s$voltinism) && isTRUE(audit$retained_rows == nrow(prepared$data)),
+    "Environmental voltinism classification audit mismatch.")
+  if (startsWith(cfg$analysis, "onset_")) env_phylo_need(
+    "voltinism_lookup" %in% names(prepared$data) &&
+      all(!is.na(prepared$data$voltinism_lookup) & prepared$data$voltinism_lookup == s$voltinism),
+    "Onset data contain another or unknown voltinism group.")
+  invisible(TRUE)
+}
+
 env_phylo_prepare_uncached <- function(cfg, packages) {
+  env_phylo_sources(cfg$project_root)$guard(cfg$project_root, "environment",
+    cfg$source_directory, cfg$analysis, cfg$source_snapshot)
   resolved <- env_phylo_paths(cfg)
   s <- env_phylo_spec(cfg$analysis)
   env_phylo_need(identical(anomaly, s$anomaly) && setequal(moderators, s$moderators),
     "Engine anomaly/moderator settings do not match the selected analysis.")
   run <- env_phylo_read_metadata(resolved$run_config_file)
-  done <- env_phylo_read_metadata(resolved$completed_file)
+  done <- env_phylo_read_metadata(resolved$original_completed_file)
   prepared <- readRDS(resolved$prepared_file)
   progress(paste("Reading saved independent environmental-Mundlak baseline:", cfg$analysis))
   memory_snapshot(cfg$monitor_directory, "before_independent_Mundlak_read")
@@ -250,11 +213,7 @@ env_phylo_prepare_uncached <- function(cfg, packages) {
   invisible(gc())
   fit <- saved$fit
   memory_snapshot(cfg$monitor_directory, "after_independent_Mundlak_read")
-  env_phylo_need(identical(saved$signature, run$signature) &&
-    identical(done$signature, run$signature) && identical(done$status, "FIT_OK") &&
-    identical(saved$version, run$version) && identical(prepared$version, run$version) &&
-    identical(saved$analysis, cfg$analysis) && identical(prepared$analysis, cfg$analysis),
-    "Independent Mundlak fit/prepared/run/completion identity mismatch.")
+  env_phylo_validate_identity(cfg, resolved, run, done, prepared, saved)
   env_phylo_need(inherits(fit, "sdmTMB") && as.character(fit$version) == "1.1.0" &&
     isFALSE(fit$reml) && identical(fit$time, "YEAR") &&
     all(fit$spatial == "off") && all(fit$spatiotemporal == "iid") &&
@@ -264,7 +223,7 @@ env_phylo_prepare_uncached <- function(cfg, packages) {
     "Unexpected independent environmental-Mundlak model structure/version.")
   env_phylo_need(identical(fit$priors, sdmTMB::sdmTMBpriors()),
     "Unexpected priors; marginal-ML comparison needs review.")
-  if (cfg$analysis != "onset") {
+  if (!startsWith(cfg$analysis, "onset_")) {
     path <- gsub("\\\\", "/", prepared$source_path)
     expected_path <- paste0("/offset_with_onset_qc_lastpeak_15km/run_fbf8b3101079/",
       cfg$analysis, "/fit_qc.rds")
@@ -404,10 +363,12 @@ env_phylo_content_hash <- function(prepared) {
 }
 
 env_phylo_prepare <- function(cfg, packages) {
+  env_phylo_sources(cfg$project_root)$guard(cfg$project_root, "environment",
+    cfg$source_directory, cfg$analysis, cfg$source_snapshot)
   resolved <- env_phylo_paths(cfg)
   cfg <- utils::modifyList(cfg, resolved)
   paths <- unlist(resolved[c("source_checkpoint", "prepared_file", "run_config_file",
-    "completed_file", "fit_checks_file")], use.names = FALSE)
+    "original_completed_file", "completed_file", "fit_checks_file")], use.names = FALSE)
   paths <- c(paths, normalizePath(cfg$tree_file, winslash = "/", mustWork = TRUE))
   if (length(cfg$signature_files)) paths <- c(paths,
     normalizePath(cfg$signature_files, winslash = "/", mustWork = TRUE))
@@ -635,13 +596,13 @@ env_phylo_payload <- function(saved, p, cfg) {
   original <- env_phylo_source_fixed(p$source)
   env_phylo_need(identical(names(original$beta), names(state$beta)),
     "Independent and phylogenetic fixed coefficient names/order differ.")
-  expected <- if (identical(p$analysis, "onset")) 18L else 19L
-  env_phylo_need(p$analysis %in% c("onset", "offset_univoltine", "offset_multivoltine") &&
+  expected <- if (startsWith(p$analysis, "onset_")) 18L else 19L
+  env_phylo_need(p$analysis %in% c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine") &&
     length(state$beta) == expected, "Unexpected environmental Mundlak fixed design.")
   env_phylo_need(is.list(p$spec) && length(p$spec$orientation) == 1L &&
     p$spec$orientation %in% c(-1, 1) && is.character(p$spec$anomaly) &&
     length(p$spec$anomaly) == 1L, "Environmental analysis specification is invalid.")
-  window <- if (p$analysis == "onset") 60L else 90L
+  window <- if (startsWith(p$analysis, "onset_")) 60L else 90L
   orientation <- if (p$analysis == "offset_multivoltine") 1 else -1
   env_phylo_need(identical(p$spec$anomaly, paste0("clim_anomaly_tw", window)) &&
     length(p$spec$window) == 1L && p$spec$window == window &&
@@ -814,16 +775,16 @@ env_phylo_export_results <- function(saved, p, cfg) {
 }
 
 
-  VERSION <- "environment_mundlak_phylogeny_15km_1.0.0"
+  VERSION <- "environment_mundlak_phylogeny_15km_1.1.0"
   ROOT <- "E:/phenoIMPACT project/code/phenoIMPACT"
-  ANALYSES <- c("onset", "offset_univoltine", "offset_multivoltine")
+  ANALYSES <- c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine")
 
   need <- function(ok, message) {
     if (!isTRUE(ok)) stop(message, call. = FALSE)
   }
 
   env_phylo_preflight_mundlak <- function(directory) {
-    progress("Checking all three Mundlak formulas against exact Gaussian likelihoods")
+    progress("Checking all four Mundlak formulas against exact Gaussian likelihoods")
     A <- kronecker(diag(3L), matrix(c(1, .65, .65, 1), 2L))
     B <- matrix(0, 6L, 9L)
     for (j in 1:3) B[(2L*j-1L):(2L*j), j] <- sqrt(.65)
@@ -831,7 +792,7 @@ env_phylo_export_results <- function(saved, p, cfg) {
     attr(A, "edge_basis") <- B
     need(max(abs(tcrossprod(B) - A)) < 1e-12, "Invalid preflight increment covariance.")
     result <- list()
-    for (response in c("onset", "offset_univoltine", "offset_multivoltine")) {
+    for (response in c("onset_multivoltine", "offset_multivoltine", "onset_univoltine", "offset_univoltine")) {
       d <- expand.grid(YEAR = 2018:2021, population = 1:4, PHYLO_ID = 1:6)
       d$g <- factor(d$PHYLO_ID)
       d$x <- sin(seq_len(nrow(d)) * .73) + .2 * (d$YEAR - 2019)
@@ -848,9 +809,9 @@ env_phylo_export_results <- function(saved, p, cfg) {
       d$ONSET_mean_z <- cos(seq_len(nrow(d)) * .37)
       d$y <- sin(seq_len(nrow(d)) * .7)
       fixed <- stats::as.formula(paste0("y ~ x * (", paste(components, collapse = " + "), ")",
-        if (response != "onset") " + ONSET_mean_z" else ""), env = baseenv())
+        if (!startsWith(response, "onset_")) " + ONSET_mean_z" else ""), env = baseenv())
       X <- stats::model.matrix(fixed, d)
-      need(qr(X)$rank == ncol(X) && ncol(X) == if (response == "onset") 18L else 19L,
+      need(qr(X)$rank == ncol(X) && ncol(X) == if (startsWith(response, "onset_")) 18L else 19L,
            "Mundlak preflight design changed.")
       f <- add_phylo(stats::update(fixed, . ~ . + (0 + x | g)), A, "x")
       fit <- sdmTMB::sdmTMB(f, data = d, family = stats::gaussian(), spatial = "off",
@@ -929,7 +890,7 @@ env_phylo_export_results <- function(saved, p, cfg) {
       }
     }
     e$version <- VERSION
-    e$anomaly <- paste0("clim_anomaly_tw", if (analysis == "onset") "60" else "90")
+    e$anomaly <- paste0("clim_anomaly_tw", if (startsWith(analysis, "onset_")) "60" else "90")
     e$moderators <- as.vector(rbind(
       paste0(c("photoperiod", "background", "predictability", "trend"), "_within_species"),
       paste0(c("photoperiod", "background", "predictability", "trend"), "_species_mean")))
@@ -946,6 +907,8 @@ env_phylo_export_results <- function(saved, p, cfg) {
     e$worker_base <- e$worker
     e$worker <- function(cfg) {
       on.exit(unlink(cfg$launch_lock, recursive = TRUE), add = TRUE)
+      env_phylo_sources(cfg$project_root)$guard(cfg$project_root, "environment",
+        cfg$source_directory, cfg$analysis, cfg$source_snapshot)
       worker_base(cfg)
     }
     environment(e$worker) <- e
@@ -1000,9 +963,13 @@ env_phylo_export_results <- function(saved, p, cfg) {
       extra_optimization_attempts == as.integer(extra_optimization_attempts), "Invalid refinement count.")
     need(requireNamespace("ps", quietly = TRUE), "The existing package ps is required.")
     root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
-    tree <- absolute_path(tree_file, root)
     if (!is.null(source_run)) source_run <- absolute_path(source_run, root)
+    env_phylo_sources(root)$idle(root, if (is.null(source_run)) NULL else
+      if (basename(source_run) %in% ANALYSES) dirname(source_run) else source_run)
     resolved <- env_phylo_resolve_source(root, analysis, source_run)
+    source_snapshot <- env_phylo_sources(root)$guard(root, "environment",
+      resolved$source_directory, analysis)
+    tree <- absolute_path(tree_file, root)
     free <- ps::ps_system_memory()$avail / 1024^3
     message("RAM disponible: ", round(free, 1), " GiB")
     if (!check_only) need(free >= minimum_free_GiB, "Insufficient available RAM for the full fit.")
@@ -1018,6 +985,7 @@ env_phylo_export_results <- function(saved, p, cfg) {
     template <- make_engine(root, analysis, scaled_gradient_tolerance, raw_gradient_tolerance)
     cfg <- utils::modifyList(template$defaults, resolved)
     cfg$project_root <- root
+    cfg$source_snapshot <- source_snapshot
     cfg$analysis <- analysis
     cfg$tree_file <- tree
     cfg$output_root <- file.path(root, "output", "phenology_plasticity", "environment_mundlak_phylogeny_15km")
@@ -1032,7 +1000,8 @@ env_phylo_export_results <- function(saved, p, cfg) {
     cfg$gradient_threshold <- raw_gradient_tolerance
     cfg$scaled_gradient_threshold <- scaled_gradient_tolerance
     cfg$signature_files <- file.path(root, c("pheno_phylogeny_qc_15km_v2.R",
-      "pheno_plasticity_phylogeny_pilot_15km.R"))
+      "pheno_plasticity_phylogeny_pilot_15km.R", "mundlak_phylogeny_sources.R",
+      "geography_mundlak_by_voltinism_qc_final.R"))
     # Native engine changes invalidate fitted checkpoints. Reporting-only edits
     # of this adapter invalidate its prepared cache, but preserve the fit.
     cfg$signature_file_hashes <- unname(tools::md5sum(cfg$signature_files))
@@ -1120,4 +1089,4 @@ status_environment_mundlak_phylogeny <- function(...) pheno_env_mundlak_phylogen
 watch_environment_mundlak_phylogeny <- function(...) pheno_env_mundlak_phylogeny$watch(...)
 stop_environment_mundlak_phylogeny <- function(...) pheno_env_mundlak_phylogeny$stop(...)
 
-message("Funcions carregades. Primer: job <- run_environment_mundlak_phylogeny(check_only = TRUE). Seguiment: watch_environment_mundlak_phylogeny(job).")
+message("Funcions carregades; cap procés iniciat. Auditoria lleugera: audit_environment_mundlak_phylogeny_sources().")

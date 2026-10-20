@@ -1,4 +1,4 @@
-# phenoIMPACT | Sequential queue for the five Mundlak phylogenetic sensitivities.
+# phenoIMPACT | Sequential queue for the six Mundlak phylogenetic sensitivities.
 # Loading defines functions only. No package installation or model starts.
 # First: audit_mundlak_phylogeny_weekend(project_root = "...")
 # Then: job <- start_mundlak_phylogeny_weekend(check_only = FALSE)
@@ -7,7 +7,7 @@
 # Hessian calls must be rebuilt. One model worker runs at a time.
 
 pheno_mundlak_phylogeny_weekend <- local({
-  VERSION <- "mundlak_phylogeny_weekend_1.0.0"
+  VERSION <- "mundlak_phylogeny_weekend_1.1.0"
   ROOT <- "E:/phenoIMPACT project/code/phenoIMPACT"
   ENV_SCRIPT <- "11c_environment_mundlak_phylogeny_15km.R"
   DEM_SCRIPT <- "10g_mundlak_demography_phylogeny_15km.R"
@@ -17,11 +17,18 @@ pheno_mundlak_phylogeny_weekend <- local({
     "pheno.phylo.qc.job", "pheno.phylo.pilot.job", "pheno.mundlak.phylogeny.weekend.job")
   need <- function(ok, message) if (!isTRUE(ok)) stop(message, call. = FALSE)
   tasks <- function() data.frame(
-    task = c("environment_onset", "environment_offset_univoltine",
-      "environment_offset_multivoltine", "demography_univoltine", "demography_multivoltine"),
-    family = c(rep("environment", 3L), rep("demography", 2L)),
-    analysis = c("onset", "offset_univoltine", "offset_multivoltine", "univoltine", "multivoltine"),
+    task = c("environment_onset_multivoltine", "environment_offset_multivoltine",
+      "environment_onset_univoltine", "environment_offset_univoltine",
+      "demography_univoltine", "demography_multivoltine"),
+    family = c(rep("environment", 4L), rep("demography", 2L)),
+    analysis = c("onset_multivoltine", "offset_multivoltine",
+      "onset_univoltine", "offset_univoltine", "univoltine", "multivoltine"),
     stringsAsFactors = FALSE)
+  sources_api <- function(root) {
+    e <- new.env(parent = globalenv())
+    sys.source(file.path(root, "mundlak_phylogeny_sources.R"), envir = e)
+    e$pheno_mundlak_phylo_sources
+  }
   absolute <- function(path, root, mustWork = TRUE) {
     if (!grepl("^([A-Za-z]:[/\\\\]|/|\\\\\\\\)", path)) path <- file.path(root, path)
     normalizePath(path, winslash = "/", mustWork = mustWork)
@@ -93,8 +100,18 @@ pheno_mundlak_phylogeny_weekend <- local({
     sources <- list(environment = environment_source_run, demography = demography_source_run)
     t <- tasks()
     rows <- candidates <- vector("list", nrow(t))
+    snapshots <- list()
+    helper <- sources_api(root)
+    environment_root <- environment_source_run
+    if (!is.null(environment_root) && basename(environment_root) %in% helper$analyses)
+      environment_root <- dirname(environment_root)
+    active_reason <- tryCatch({
+      helper$idle(root, environment_root)
+      known_workers_idle()
+      NULL
+    }, error = function(e) conditionMessage(e))
     apis <- list()
-    for (family in unique(t$family)) apis[[family]] <- tryCatch(load_api(root, family), error = identity)
+    for (family in unique(t$family)) apis[[family]] <- tryCatch(load_api(root, family), error = base::identity)
     for (i in seq_len(nrow(t))) {
       family <- t$family[[i]]
       api <- apis[[family]]
@@ -108,22 +125,54 @@ pheno_mundlak_phylogeny_weekend <- local({
         need(is.data.frame(value) && all(c("source_directory", "accepted", "reason") %in% names(value)),
           "Unexpected source-audit schema; no model was started.")
         value
-      }, error = identity)
+      }, error = base::identity)
       okay <- if (inherits(tab, "error")) integer() else which(!is.na(tab$accepted) & tab$accepted)
+      if (family == "demography" && !inherits(tab, "error")) {
+        legacy <- tab$accepted & tab$source_kind != "post_environment"
+        tab$accepted[legacy] <- FALSE
+        tab$reason[legacy] <- "The six-model queue requires updated post-environment demographic sources."
+        okay <- which(!is.na(tab$accepted) & tab$accepted)
+      }
       reason <- if (inherits(tab, "error")) conditionMessage(tab) else if (length(okay) == 1L) "eligible FIT_OK source" else
         if (length(okay) > 1L) "multiple eligible sources; specify the independent source_run" else
           paste(unique(tab$reason), collapse = " | ")
+      snapshot_error <- NULL
+      if (length(okay) == 1L) {
+        snapshots[[t$task[[i]]]] <- tryCatch(helper$snapshot(root, family,
+          tab$source_directory[[okay]], t$analysis[[i]]), error = function(e) {
+            snapshot_error <<- conditionMessage(e); NULL
+          })
+      }
       rows[[i]] <- data.frame(task = t$task[[i]], family = family, analysis = t$analysis[[i]],
-        accepted_sources = length(okay), ready = length(okay) == 1L,
+        accepted_sources = length(okay), ready = length(okay) == 1L &&
+          is.null(snapshot_error) && is.null(active_reason),
         source_directory = if (length(okay) == 1L) as.character(tab$source_directory[[okay]]) else NA_character_,
-        reason = reason, stringsAsFactors = FALSE)
+        refinement_version = if (family == "environment" && !inherits(tab, "error"))
+          paste(unique(tab$refinement_version[if (length(okay) == 1L) okay else seq_len(nrow(tab))]),
+            collapse = ",") else NA_character_,
+        reason = paste(c(reason, snapshot_error, active_reason), collapse = " | "), stringsAsFactors = FALSE)
       if (!inherits(tab, "error")) {
         tab$queue_task <- t$task[[i]]
         candidates[[i]] <- tab
       }
     }
     result <- do.call(rbind, rows)
+    env_dirs <- unique(dirname(result$source_directory[result$family == "environment" &
+      !is.na(result$source_directory)]))
+    demo_dirs <- result$source_directory[result$family == "demography" & !is.na(result$source_directory)]
+    consistent <- length(env_dirs) <= 1L
+    for (directory in demo_dirs) {
+      config <- helper$metadata(file.path(dirname(directory), "run_config.rds"))
+      consistent <- consistent && length(env_dirs) == 1L &&
+        identical(normalizePath(config$environment_run, winslash = "/", mustWork = TRUE),
+          normalizePath(env_dirs[[1L]], winslash = "/", mustWork = TRUE))
+    }
+    if (!consistent) {
+      result$ready <- FALSE
+      result$reason <- paste(result$reason, "Queue environmental and demographic provenance differ.", sep = " | ")
+    }
     attr(result, "source_audits") <- candidates
+    attr(result, "source_snapshots") <- snapshots
     attr(result, "all_ready") <- all(result$ready)
     attr(result, "validation_scope") <- "Metadata eligibility only; no fitted model is opened and no native call or compilation runs."
     result
@@ -131,7 +180,7 @@ pheno_mundlak_phylogeny_weekend <- local({
   audit <- function(project_root = ROOT, environment_source_run = NULL, demography_source_run = NULL) {
     result <- audit_impl(project_root, environment_source_run, demography_source_run)
     print(result, row.names = FALSE)
-    message("Auditoria de les cinc fonts independents; cap model iniciat.")
+    message("Auditoria de les sis fonts independents i dels processos actius; cap model iniciat.")
     invisible(result)
   }
   record_table <- function(records) {
@@ -180,6 +229,8 @@ pheno_mundlak_phylogeny_weekend <- local({
       update(stage = "STARTING_MODEL", current_task = record$task, current_log = NA_character_, current_output = NA_character_, model_progress = NULL)
       api <- NULL
       error <- tryCatch({
+        sources_api(cfg$project_root)$guard(cfg$project_root, record$family,
+          task$source_directory[[1L]], record$analysis, cfg$source_snapshots[[record$task]])
         api <- load_api(cfg$project_root, record$family)
         fun <- get(if (record$family == "environment") "run_environment_mundlak_phylogeny" else
           "run_demography_mundlak_phylogeny", envir = api, inherits = FALSE)
@@ -216,7 +267,7 @@ pheno_mundlak_phylogeny_weekend <- local({
         record$status <- if (passed) "FIT_OK" else "INFERENCE_NOT_READY"
         if (!passed) record$reason <- "Fit/checkpoints retained; the model did not report inference_ready=TRUE. Inspect its numerical checks and log."
         NULL
-      }, error = identity)
+      }, error = base::identity)
       if (inherits(error, "error")) {
         record$status <- "WORKER_FAILED"
         record$reason <- conditionMessage(error)
@@ -263,9 +314,11 @@ pheno_mundlak_phylogeny_weekend <- local({
     root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
     audit_table <- audit(root, environment_source_run, demography_source_run)
     if (check_only) return(invisible(audit_table))
-    need(all(audit_table$ready), "All five independent sources must be uniquely FIT_OK before the queue can start. No model was started.")
+    need(all(audit_table$ready), "All six independent sources must be uniquely accepted and workers idle before the queue can start. No model was started.")
     for (package in c("callr", "ps", "digest")) need(requireNamespace(package, quietly = TRUE), paste("Existing package required:", package))
-    required <- file.path(root, c(ENV_SCRIPT, DEM_SCRIPT, "pheno_phylogeny_qc_15km_v2.R", "pheno_plasticity_phylogeny_pilot_15km.R"))
+    required <- file.path(root, c(ENV_SCRIPT, DEM_SCRIPT, "pheno_phylogeny_qc_15km_v2.R",
+      "pheno_plasticity_phylogeny_pilot_15km.R", "mundlak_phylogeny_sources.R",
+      "geography_mundlak_by_voltinism_qc_final.R"))
     need(all(file.exists(required)), paste("Missing queue scripts:", paste(required[!file.exists(required)], collapse = ", ")))
     known_workers_idle()
     need(is.list(environment_arguments) && is.list(demography_arguments), "Model arguments must be lists.")
@@ -283,6 +336,7 @@ pheno_mundlak_phylogeny_weekend <- local({
       arguments[[family]] <- x
     }
     signature <- digest::digest(list(version = VERSION, tasks = audit_table[c("task", "family", "analysis", "source_directory")],
+      sources = attr(audit_table, "source_snapshots"),
       scripts = unname(tools::md5sum(required)), arguments = arguments), algo = "xxhash64")
     parent <- file.path(root, "output", "mundlak_phylogeny_weekend")
     dir.create(parent, recursive = TRUE, showWarnings = FALSE)
@@ -300,6 +354,7 @@ pheno_mundlak_phylogeny_weekend <- local({
     attempt <- tempfile(paste0("attempt_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_"), output)
     need(dir.create(attempt), "Cannot create queue attempt directory.")
     cfg <- list(version = VERSION, project_root = root, tasks = audit_table,
+      source_snapshots = attr(audit_table, "source_snapshots"),
       output_directory = output, attempt_directory = attempt, lock = lock, token = token,
       progress_file = file.path(attempt, "queue_progress.rds"), handoff_file = file.path(attempt, "controller_handoff.rds"), stop_on_error = stop_on_error,
       model_arguments = arguments, poll_seconds = poll_seconds)
@@ -319,7 +374,7 @@ pheno_mundlak_phylogeny_weekend <- local({
     job <- list(process = process, config = cfg, progress_file = cfg$progress_file,
       log_file = log, output_directory = output, attempt_directory = attempt)
     options(pheno.mundlak.phylogeny.weekend.job = job)
-    message("Cua de cinc models iniciada; un worker de model alhora. Manteniu R obert i l'ordinador despert.",
+    message("Cua de sis models iniciada; un worker de model alhora. Manteniu R obert i l'ordinador despert.",
       "\nSeguiment: watch_mundlak_phylogeny_weekend(job)", "\nRegistre: ", log)
     invisible(job)
   }

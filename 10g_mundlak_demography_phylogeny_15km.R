@@ -1,5 +1,5 @@
 # phenoIMPACT | Phylogenetic sensitivity of demographic Mundlak models (10e/10f).
-# Version 1.0.0 | 2026-10-15. Sourcing defines functions and starts no analysis.
+# Version 1.1.0 | 2026-10-20. Sourcing defines functions and starts no analysis.
 # Models annual abundance (Gamma/log): multivoltine and univoltine.
 # Reuses the completed FIT_OK source, exact 14 fixed terms, population AR1,
 # species/site IID intercept and time slopes, and original annual 15-km SPDE.
@@ -395,6 +395,17 @@ demo_phylo_need <- function(ok, message) {
 
 demo_phylo_version <- function() "mundlak_geography_plasticity_qc_final_spatial_15km_2.0.2"
 
+demo_phylo_sources <- function(root) {
+  e <- new.env(parent = globalenv())
+  sys.source(file.path(root, "mundlak_phylogeny_sources.R"), envir = e)
+  e$pheno_mundlak_phylo_sources
+}
+
+demo_phylo_guard <- function(cfg) {
+  demo_phylo_sources(cfg$project_root)$guard(cfg$project_root, "demography",
+    cfg$source_directory, cfg$group, cfg$source_snapshot)
+}
+
 demo_phylo_groups <- function() c("multivoltine", "univoltine")
 
 demo_phylo_expected_samples <- function() list(
@@ -423,7 +434,7 @@ demo_phylo_metadata <- function(file) {
   x
 }
 
-demo_phylo_audit_row <- function(run, group, note = "") {
+demo_phylo_audit_legacy_row <- function(run, group, note = "") {
   directory <- file.path(run, paste0(group, "__mundlak"))
   files <- c(source_checkpoint = file.path(directory, "fit.rds"),
     prepared_file = file.path(run, paste0("prepared_mundlak_", group, ".rds")),
@@ -482,6 +493,23 @@ demo_phylo_audit_row <- function(run, group, note = "") {
     validation_scope = "eligibility_only_not_full_array_validation", stringsAsFactors = FALSE)
 }
 
+demo_phylo_audit_row <- function(root, run, group, note = "") {
+  config <- tryCatch(demo_phylo_metadata(file.path(run, "run_config.rds")), error = function(e) NULL)
+  if (identical(config$version, demo_phylo_version())) {
+    row <- demo_phylo_audit_legacy_row(run, group, note)
+    row$source_kind <- "legacy"
+    row$status <- if (row$accepted) "FIT_OK" else "NOT_ACCEPTED"
+    row$preparation_marker <- NA_character_
+    row$expected_nobs <- demo_phylo_expected_samples()[[group]][["nobs"]]
+    row$expected_npop <- demo_phylo_expected_samples()[[group]][["npop"]]
+    return(row[c("group", "source_directory", "source_checkpoint", "prepared_file",
+      "run_config_file", "fit_checks_file", "result_file", "preparation_marker", "source_kind",
+      "version", "run_signature", "status", "numerical_checks_ok", "accepted",
+      "expected_nobs", "expected_npop", "reason", "validation_scope")])
+  }
+  demo_phylo_sources(root)$demography_row(root, run, group, note)
+}
+
 demo_phylo_audit_sources <- function(root, group = NULL, source_run = NULL) {
   root <- normalizePath(root, winslash = "/", mustWork = TRUE)
   groups <- if (is.null(group)) demo_phylo_groups() else group
@@ -490,7 +518,7 @@ demo_phylo_audit_sources <- function(root, group = NULL, source_run = NULL) {
   groups <- unique(groups)
   note <- ""
   if (is.null(source_run)) {
-    parent <- file.path(root, "output/population_trends/mundlak_geography_plasticity_qc_final_spatial_15km")
+    parent <- file.path(root, "output/population_trends/post_environment_mundlak_15km")
     runs <- if (dir.exists(parent)) list.dirs(parent, recursive = FALSE, full.names = TRUE) else character()
     if (!length(runs)) { runs <- parent; note <- "no independent demographic Mundlak run folders found" }
   } else {
@@ -505,7 +533,7 @@ demo_phylo_audit_sources <- function(root, group = NULL, source_run = NULL) {
       runs <- dirname(path)
     } else runs <- path
   }
-  rows <- lapply(runs, function(run) lapply(groups, function(g) demo_phylo_audit_row(run, g, note)))
+  rows <- lapply(runs, function(run) lapply(groups, function(g) demo_phylo_audit_row(root, run, g, note)))
   out <- do.call(rbind, unlist(rows, recursive = FALSE)); rownames(out) <- NULL
   attr(out, "validation_scope") <- "Metadata eligibility only; no fitted-model or prepared-data RDS is read."
   out
@@ -520,7 +548,37 @@ demo_phylo_resolve_source <- function(root, group, source_run = NULL) {
     group, "; found ", length(good), ".\n", paste(paste(audit$source_directory, audit$reason, sep = " | "), collapse = "\n"),
     "\nInspect demo_phylo_audit_sources(root, group, source_run), and select an explicit source_run if needed. No baseline is fitted automatically."), call. = FALSE)
   as.list(audit[good, c("group", "source_directory", "source_checkpoint", "prepared_file", "run_config_file",
-    "fit_checks_file", "result_file", "run_signature"), drop = FALSE])
+    "fit_checks_file", "result_file", "run_signature", "source_kind", "version",
+    "preparation_marker", "expected_nobs", "expected_npop"), drop = FALSE])
+}
+
+demo_phylo_validate_identity <- function(cfg, resolved, run, p, fit) {
+  post <- identical(resolved$source_kind, "post_environment")
+  version <- if (post) run$version else demo_phylo_version()
+  demo_phylo_need(is.list(p) && is.list(fit) && identical(run$version, version) &&
+    identical(p$version, version) && identical(fit$version, version) &&
+    identical(p$group, cfg$group) && identical(fit$group, cfg$group) &&
+    identical(p$signature, fit$signature) && identical(p$source_bridge_signature, fit$source_bridge_signature) &&
+    identical(p$source_data_signature, fit$source_data_signature), "Demographic baseline fit/prepared/run identities disagree.")
+  expected_signature <- if (post) {
+    demo_phylo_need(version %in% demo_phylo_sources(cfg$project_root)$post_versions() &&
+      isTRUE(p$predictors_updated), "Updated demographic plasticity predictors are required.")
+    digest::digest(list(run$signature, cfg$group, p$frame, p$data), algo = "sha256")
+  } else digest::digest(list(version = version, group = cfg$group,
+    source_signature = p$source_bridge_signature, X = p$X, response = p$data$y), algo = "sha256")
+  demo_phylo_need(identical(p$signature, expected_signature),
+    "Demographic prepared content does not reproduce its saved signature.")
+  sample <- if (post) c(nobs = resolved$expected_nobs, npop = resolved$expected_npop) else
+    demo_phylo_expected_samples()[[cfg$group]]
+  if (!is.null(cfg$expected_samples)) {
+    requested <- cfg$expected_samples[[cfg$group]]
+    demo_phylo_need(is.numeric(requested) && identical(as.numeric(requested[c("nobs", "npop")]),
+      unname(as.numeric(sample))), "Requested sample disagrees with accepted source metadata.")
+  }
+  demo_phylo_need(is.numeric(sample) && all(is.finite(sample)) && all(sample > 0) &&
+    nrow(p$frame) == sample[["nobs"]] && length(unique(p$frame$pop_id)) == sample[["npop"]],
+    "Demographic source sample differs from accepted preparation.")
+  list(version = version, sample = sample, post = post)
 }
 
 demo_phylo_plain <- function(x) {
@@ -555,17 +613,10 @@ demo_phylo_prepare_uncached <- function(cfg, packages = NULL, resolved = NULL) {
   run <- demo_phylo_metadata(resolved$run_config_file)
   p <- readRDS(resolved$prepared_file)
   fit <- readRDS(resolved$source_checkpoint)
-  version <- demo_phylo_version()
-  demo_phylo_need(is.list(p) && is.list(fit) && identical(run$version, version) &&
-    identical(p$version, version) && identical(fit$version, version) &&
-    identical(p$group, cfg$group) && identical(fit$group, cfg$group) &&
-    identical(p$signature, fit$signature) && identical(p$source_bridge_signature, fit$source_bridge_signature) &&
-    identical(p$source_data_signature, fit$source_data_signature), "Demographic baseline fit/prepared/run identities disagree.")
+  identity <- demo_phylo_validate_identity(cfg, resolved, run, p, fit)
+  version <- identity$version
   demo_phylo_need(is.character(p$signature) && length(p$signature) == 1L &&
     grepl("^[a-f0-9]{64}$", p$signature), "Invalid demographic prepared signature.")
-  expected_signature <- digest::digest(list(version = version, group = cfg$group,
-    source_signature = p$source_bridge_signature, X = p$X, response = p$data$y), algo = "sha256")
-  demo_phylo_need(identical(p$signature, expected_signature), "Demographic prepared content does not reproduce its saved signature.")
   demo_phylo_need(is.data.frame(p$frame) && is.data.frame(p$populations) && is.data.frame(p$sites) &&
     is.list(p$data) && is.list(fit$parameters), "Missing demographic prepared frame/data/parameters.")
   d <- p$frame; data <- p$data; pars <- fit$parameters; n <- nrow(d)
@@ -573,10 +624,10 @@ demo_phylo_prepare_uncached <- function(cfg, packages = NULL, resolved = NULL) {
     "onset_plasticity_z", "offset_plasticity_bio_z", demo_phylo_X_names()[3:8])
   demo_phylo_need(all(fields %in% names(d)) && !anyNA(d[fields]) && n > 0L,
     "Demographic annual frame lacks required finite observations.")
-  sample <- if (is.null(cfg$expected_samples)) demo_phylo_expected_samples()[[cfg$group]] else cfg$expected_samples[[cfg$group]]
+  sample <- identity$sample
   demo_phylo_need(is.numeric(sample) && all(c("nobs", "npop") %in% names(sample)) &&
     n == sample[["nobs"]] && length(unique(d$pop_id)) == sample[["npop"]],
-    "Demographic source does not contain the reviewed FINAL-QC common sample.")
+    "Demographic source does not contain the accepted common sample.")
   X <- stats::model.matrix(~ year_decade * (latitude_within_species_10deg + longitude_within_species_10deg +
     onset_plasticity_within_species_z + onset_plasticity_species_mean_z +
     offset_plasticity_within_species_z + offset_plasticity_species_mean_z), data = d)
@@ -631,7 +682,8 @@ demo_phylo_prepare_uncached <- function(cfg, packages = NULL, resolved = NULL) {
     isTRUE(ck$numerical_checks_ok) && identical(as.integer(opt$convergence), 0L) && isTRUE(ck$pdHess) &&
     is.finite(ck$gradient_covariance_norm) && ck$gradient_covariance_norm < min(.05, cfg$scaled_gradient_threshold) &&
     is.finite(ck$max_abs_gradient) && ck$max_abs_gradient >= 0 && is.finite(opt$objective) &&
-    is.finite(p$source_fit_objective) && opt$objective <= p$source_fit_objective + .001 && ck$nobs == n,
+    (identity$post || (is.finite(p$source_fit_objective) &&
+      opt$objective <= p$source_fit_objective + .001)) && ck$nobs == n,
     "Independent demographic baseline fails its original numerical/likelihood acceptance gate.")
   outer <- unlist(pars[c("beta", "log_sd", "rho_raw", "log_shape", "log_range", "log_spatial_sd")], use.names = FALSE)
   outer_names <- c(rep("beta", 14L), rep("log_sd", 5L), "rho_raw", "log_shape", "log_range", "log_spatial_sd")
@@ -684,7 +736,7 @@ demo_phylo_prepare_uncached <- function(cfg, packages = NULL, resolved = NULL) {
     stats = data.frame(nobs = n, k = length(outer), logLik = -opt$objective, AIC = ck$AIC),
     component_scales = scales, row_hash = digest::digest(d, algo = "sha256"), data_hash = original_data_hash,
     mesh_hash = mesh_hash, checkpoint = resolved$source_checkpoint, signature = p$signature,
-    run_signature = run$run_signature, baseline_version = version,
+    run_signature = if (identity$post) run$signature else run$run_signature, baseline_version = version,
     scaled_gradient_recomputed = FALSE, numerical_gate = "original saved covariance-scaled gradient norm < 0.05")
   fingerprint <- digest::digest(list(source, source_hashes, tree, B, packages, cfg$signature_file_hashes,
     cfg$scaled_gradient_threshold), algo = "sha256")
@@ -711,6 +763,7 @@ demo_phylo_prepare_uncached <- function(cfg, packages = NULL, resolved = NULL) {
 }
 
 demo_phylo_prepare <- function(cfg, packages = NULL) {
+  demo_phylo_guard(cfg)
   if (is.null(cfg$scaled_gradient_threshold)) cfg$scaled_gradient_threshold <- .05
   if (is.null(cfg$maximum_single_basis_GiB)) cfg$maximum_single_basis_GiB <- 2
   cfg$project_root <- normalizePath(cfg$project_root, winslash = "/", mustWork = TRUE)
@@ -723,7 +776,11 @@ demo_phylo_prepare <- function(cfg, packages = NULL) {
   engine_version <- if (exists("VERSION", inherits = TRUE)) get("VERSION", inherits = TRUE) else "demography_phylogeny_source_1.0"
   manifest <- list(version = engine_version, group = cfg$group, files = tools::md5sum(inputs),
     packages = packages, signature_file_hashes = cfg$signature_file_hashes,
-    scaled_gradient_threshold = cfg$scaled_gradient_threshold, expected_samples = cfg$expected_samples)
+    scaled_gradient_threshold = cfg$scaled_gradient_threshold, expected_samples = cfg$expected_samples,
+    source_snapshot = cfg$source_snapshot,
+    adapter_hashes = tools::md5sum(file.path(cfg$project_root,
+      c("10g_mundlak_demography_phylogeny_15km.R", "mundlak_phylogeny_sources.R",
+        "geography_mundlak_by_voltinism_qc_final.R"))))
   key <- digest::digest(manifest, algo = "sha256")
   cache <- file.path(cfg$output_root, "source_cache", paste0("prepared_", key, ".rds"))
   reused <- FALSE
@@ -1141,7 +1198,7 @@ demo_phylo_export_results <- function(fit, p, cfg = list()) {
 
 
 
-  VERSION <- "mundlak_demography_phylogeny_15km_1.0.0"
+  VERSION <- "mundlak_demography_phylogeny_15km_1.1.0"
   ROOT <- "E:/phenoIMPACT project/code/phenoIMPACT"
   GROUPS <- c("multivoltine", "univoltine")
 
@@ -1240,6 +1297,7 @@ demo_phylo_export_results <- function(fit, p, cfg = list()) {
   worker <- function(cfg) {
     on.exit(release_lock(cfg), add = TRUE)
     tryCatch({
+      demo_phylo_guard(cfg)
       packages <- dependencies()
       writeLines(capture.output(utils::sessionInfo()), file.path(cfg$monitor_directory, "sessionInfo.txt"))
       need(ps::ps_disk_usage(cfg$output_root)$available / 1024^3 >= cfg$minimum_disk_GiB,
@@ -1394,7 +1452,6 @@ demo_phylo_export_results <- function(fit, p, cfg = list()) {
     maximum_single_basis_GiB = 2, optimizer_iterations = 1200L,
     optimizer_evaluations = 1800L, scaled_gradient_threshold = 0.05,
     refine = FALSE, expected_samples = NULL) {
-    packages <- dependencies()
     need(length(group) == 1L && group %in% GROUPS, "Choose multivoltine or univoltine.")
     for (x in list(check_only, refine)) need(is.logical(x) && length(x) == 1L && !is.na(x), "Invalid logical option.")
     for (x in list(checkpoint_seconds, minimum_free_GiB, minimum_disk_GiB, maximum_single_basis_GiB,
@@ -1404,7 +1461,11 @@ demo_phylo_export_results <- function(fit, p, cfg = list()) {
       optimizer_evaluations == as.integer(optimizer_evaluations), "Optimizer limits must be integers.")
     root <- normalizePath(project_root, winslash = "/", mustWork = TRUE)
     if (!is.null(source_run)) source_run <- absolute_path(source_run, root)
+    demo_phylo_sources(root)$idle(root)
     resolved <- demo_phylo_resolve_source(root, group, source_run)
+    source_snapshot <- demo_phylo_sources(root)$guard(root, "demography",
+      resolved$source_directory, group)
+    packages <- dependencies()
     free <- ps::ps_system_memory()$avail / 1024^3
     message("RAM disponible: ", round(free, 1), " GiB")
     if (!check_only) need(free >= minimum_free_GiB, "Insufficient available RAM.")
@@ -1416,6 +1477,7 @@ demo_phylo_export_results <- function(fit, p, cfg = list()) {
     }
     cfg <- resolved
     cfg$project_root <- root
+    cfg$source_snapshot <- source_snapshot
     cfg$group <- group
     cfg$tree_file <- absolute_path(tree_file, root)
     cfg$output_root <- file.path(root, "output/population_trends/mundlak_demography_phylogeny_15km")
@@ -1514,4 +1576,4 @@ status_demography_mundlak_phylogeny <- function(...) pheno_demography_mundlak_ph
 watch_demography_mundlak_phylogeny <- function(...) pheno_demography_mundlak_phylogeny$watch(...)
 stop_demography_mundlak_phylogeny <- function(...) pheno_demography_mundlak_phylogeny$stop(...)
 
-message("Funcions carregades. Primer: job <- run_demography_mundlak_phylogeny(check_only = TRUE). Seguiment: watch_demography_mundlak_phylogeny(job).")
+message("Funcions carregades; cap procés iniciat. Auditoria lleugera: audit_demography_mundlak_phylogeny_sources().")

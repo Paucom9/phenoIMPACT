@@ -1,114 +1,72 @@
-# Cinc models Mundlak filogenètics amb malla de 15 km
+# Sis sensibilitats filogenètiques Mundlak amb malla de 15 km
 
-Scripts preparats el 15 d'octubre de 2026. No contenen dades del projecte i no ajusten cap model en carregar-los.
+Versió 1.1.0 dels adaptadors i de la cua, 20 d’octubre de 2026.
 
-| Família | Models | Component filogenètic afegit |
+| Família | Models | Component filogenètic |
 | --- | --- | --- |
-| Plasticitat–factors ambientals | onset, offset_univoltine, offset_multivoltine | Pendent d'anomalia climàtica per espècie |
-| Plasticitat–tendències demogràfiques | univoltine, multivoltine | Pendent temporal per espècie |
+| Ambiental | onset_multivoltine, offset_multivoltine, onset_univoltine, offset_univoltine | Pendent d’anomalia climàtica per espècie |
+| Demogràfica | univoltine, multivoltine | Pendent temporal per espècie |
 
-Es conserva la formulació Mundlak, els efectes independents d'espècie, la mateixa mostra i la malla de 15 km de cada ajustament independent. Els models demogràfics conserven Gamma/log, AR1 de població amb salts d'any, interceptes i pendents d'espècie i lloc, i camp espacial anual. Els predictors de plasticitat de la primera etapa es mantenen iguals: aquesta comparació avalua l'efecte d'afegir covariància filogenètica al model demogràfic.
+Es conserven les files, els predictors, les escales, els efectes independents i la malla de cada font acceptada. Els ambientals mantenen Gaussian/ML, els vuit moderadors Mundlak i el control anual d’onset només als offsets; les finestres són de 60 dies per als dos onset i de 90 dies per als offsets. Els demogràfics mantenen Gamma/log, els 14 termes fixos, AR1 de població amb salts reals d’any, interceptes i pendents d’espècie i lloc i camp espacial anual.
 
-## Instal·lació dels scripts
+La covariància conserva l’arrel original de l’arbre i diagonal unitària. Els predictors de plasticitat dels demogràfics actualitzats es mantenen fixos durant aquesta sensibilitat; la incertesa de la primera etapa no es propaga automàticament.
 
-Descomprimeix els cinc fitxers R d'aquest paquet directament a:
-
-`E:/phenoIMPACT project/code/phenoIMPACT`
-
-El paquet inclou:
-
-- `11c_environment_mundlak_phylogeny_15km.R`: tres sensibilitats ambientals.
-- `10g_mundlak_demography_phylogeny_15km.R`: dues sensibilitats demogràfiques.
-- `run_mundlak_phylogeny_weekend.R`: auditoria, cua i seguiment.
-- `pheno_phylogeny_qc_15km_v2.R` i `pheno_plasticity_phylogeny_pilot_15km.R`: dependències de l'11c. La cua les carrega internament de manera que no inicia el pilot antic.
-
-Si R està executant els models independents, deixa que acabin. Els nous scripts escriuen en carpetes de resultats separades. No cal tornar a executar l'11b ni el 10f per carregar aquesta cua.
-
-S'utilitzen els paquets ja instal·lats (`TMB`, `Matrix`, `sdmTMB`, `ape`, `digest`, `callr`, `ps` i dependències). No s'actualitza cap paquet. La primera compilació C++ demogràfica requereix el Rtools corresponent a la versió d'R; per a R 4.5, Rtools45.
-
-## Comprovació inicial: es pot fer abans que acabin els independents
-
-A la consola d'RStudio:
+## Auditoria segura mentre corren els ambientals
 
 ```r
-root <- "E:/phenoIMPACT project/code/phenoIMPACT"
-source(file.path(root, "run_mundlak_phylogeny_weekend.R"), encoding = "UTF-8")
-audit <- audit_mundlak_phylogeny_weekend(project_root = root)
+source("run_mundlak_phylogeny_weekend.R", encoding = "UTF-8")
+audit <- audit_mundlak_phylogeny_weekend()
 ```
 
-Aquesta auditoria només llegeix metadades petites. No obre els models, no compila i no ajusta res. Mentre l'onset independent continuï en marxa és normal que alguns `ready` siguin `FALSE`. La presència d'una carpeta o d'un `prepared_input.rds` no compta com un ajustament complet.
+Aquesta crida només llegeix metadades petites i consulta processos. No carrega ajustos ni entrades preparades, no compila i no crea processos ni resultats. Mostra sis files i `ready = FALSE` si falten fonts, hi ha processos independents actius, alguna font no està acceptada o la procedència no concorda.
 
-Fonts compatibles:
+`start_mundlak_phylogeny_weekend()` també fa només aquesta auditoria per defecte (`check_only = TRUE`). En canvi, `run_environment_mundlak_phylogeny(check_only = TRUE)` i `run_demography_mundlak_phylogeny(check_only = TRUE)` són comprovacions de model que poden crear processos, carregar fitxers grans i construir exemples natius. No s’han d’utilitzar com a substitut de l’auditoria lleugera mentre hi ha ajustos en marxa.
 
-- Ambientals: `output/phenology_plasticity/environment_mundlak_qc_final_15km/run_*`, versions 1.1/1.2/1.3 i estat final `FIT_OK`. Els offsets han de procedir dels ajustaments post-QC.
-- Demogràfiques: `output/population_trends/mundlak_geography_plasticity_qc_final_spatial_15km/run_*`, versió 2.0.2 del 10e/10f i controls numèrics acceptats. Es verifica la mostra FINAL-QC revisada.
+## Fonts ambientals i refinaments
 
-Si hi ha més d'una font independent vàlida per a un model, especifica els dos runs explícitament:
+L’arrel per defecte és `output/phenology_plasticity/environment_mundlak_by_voltinism_qc_final_15km`, versió científica `environment_mundlak_by_voltinism_qc_final_15km_2.1_resilient`. L’onset agrupat anterior no és compatible amb els quatre models.
+
+La selecció utilitza el comprovador geogràfic 1.1.0:
+
+- V2 té prioritat per a `offset_univoltine`, `onset_multivoltine` i `onset_univoltine`, fins i tot abans que se’n creïn les carpetes individuals.
+- `offset_multivoltine` es conserva de v1, respectant `old_refinement` de la configuració v2.
+- Un refinament pendent, incomplet o rebutjat no recupera una versió anterior.
+- Es comproven estat, identitat, fitxers i controls numèrics: convergència 0, Hessiana positiva i gradient màxim absolut inferior a 0,001.
+- Els ajustos refinats es validen amb `source_signature` i `source_run`; les entrades preparades continuen sent les originals del mateix model i grup de voltinisme.
+
+## Fonts demogràfiques actualitzades
+
+L’arrel per defecte és `output/population_trends/post_environment_mundlak_15km`, amb versió `post_environment_mundlak_1.1`. La cua exigeix els dos ajustos completats i numèricament acceptats, no només una preparació o una carpeta existent.
+
+Es verifiquen les quatre extraccions, la selecció ambiental v1/v2 desada, les metadades de les fonts, les signatures del run i els marcadors de preparació. La mida de la mostra prové de `prepared_<group>_completed.rds` i després es contrasta amb les dades i el contingut signat. No s’imposen les mides dels antics demogràfics, perquè la intersecció de poblacions amb plasticitat disponible pot haver canviat.
+
+Es conserva el llindar numèric demogràfic `sqrt(g' V g) < 0,05`. La versemblança d’un demogràfic amb predictors o mostra actualitzats no es compara com a criteri d’acceptació amb la versemblança de la font anterior. Es mantenen les comprovacions internes del seu òptim, covariància, predictor i AIC.
+
+L’auditoria individual permet consultar explícitament una font històrica 2.0.2. La cua de sis models exigeix fonts postambientals actualitzades i una mateixa procedència ambiental per als sis models. La revisió residual continua sent un pas separat; acceptació numèrica no equival a validació científica final.
+
+## Execució posterior, explícita
+
+Quan les sis fonts siguin acceptables, els processos independents hagin acabat i hi hagi recursos:
 
 ```r
-audit <- audit_mundlak_phylogeny_weekend(
-  project_root = root,
-  environment_source_run = "E:/.../environment_mundlak_qc_final_15km/run_...",
-  demography_source_run = "E:/.../mundlak_geography_plasticity_qc_final_spatial_15km/run_..."
+job <- start_mundlak_phylogeny_weekend(
+  check_only = FALSE,
+  environment_source_run = "E:/.../environment_mundlak_by_voltinism_qc_final_15km/run_...",
+  demography_source_run = "E:/.../post_environment_mundlak_15km/run_..."
 )
+watch_mundlak_phylogeny_weekend(job)
 ```
 
-## Inici del cap de setmana
+L’ordre és onset multivoltí → offset multivoltí → onset univoltí → offset univoltí → demogràfic univoltí → demogràfic multivoltí. Només hi ha un procés de model alhora. No s’ajusta automàticament cap font independent pendent. Cada llançament torna a comprovar processos i metadades, inclosos processos aïllats v2 amb un controlador aturat.
 
-Quan els cinc `ready` siguin `TRUE` i els workers independents hagin acabat:
+Es mantenen els mínims de RAM dels adaptadors: 30 GiB per als ambientals i 25 GiB per als demogràfics. La cua desa la selecció i les metadades de cada font; qualsevol canvi abans del següent model bloqueja aquell llançament.
 
-```r
-weekend_job <- start_mundlak_phylogeny_weekend(
-  project_root = root,
-  check_only = FALSE
-)
-watch_mundlak_phylogeny_weekend(weekend_job)
+## Fitxers i validació
+
+Els adaptadors `11c_environment_mundlak_phylogeny_15km.R`, `10g_mundlak_demography_phylogeny_15km.R` i la cua utilitzen `mundlak_phylogeny_sources.R` i `geography_mundlak_by_voltinism_qc_final.R` 1.1.0. L’adaptador ambiental manté les dependències natives existents `pheno_phylogeny_qc_15km_v2.R` i `pheno_plasticity_phylogeny_pilot_15km.R`. No cal actualitzar paquets.
+
+```text
+Rscript --vanilla tests/test_mundlak_phylogeny_sources.R --require-native
 ```
 
-Si has especificat fonts a l'auditoria, passa també `environment_source_run` i `demography_source_run` a l'inici. L'auditoria no modifica els valors per defecte de l'inici.
-
-Ordre: onset ambiental → offset univoltí ambiental → offset multivoltí ambiental → tendències univoltines → tendències multivoltines. Hi ha un controlador lleuger i un sol worker de model alhora. No s'inicia automàticament cap ajustament independent que falti. `start_mundlak_phylogeny_weekend()` sense `check_only = FALSE` només fa l'auditoria.
-
-Mantén RStudio obert i Windows sense suspensió/hibernació. Cada família comprova la RAM disponible abans d'iniciar el seu worker: 30 GiB per als ambientals i 25 GiB per als demogràfics. No és una garantia que la memòria sigui suficient per a tots els ajustaments. El temps i la RAM màxims amb les dades completes encara no s'han mesurat.
-
-## Seguiment, aturada i represa
-
-```r
-status_mundlak_phylogeny_weekend(weekend_job)
-watch_mundlak_phylogeny_weekend(weekend_job)
-
-# Només si vols aturar expressament la cua i el model actiu:
-stop_mundlak_phylogeny_weekend(weekend_job)
-```
-
-Interrompre `watch` amb Esc/Ctrl+C pausa el monitor; el worker continua. Tancar RStudio sí que pot aturar els subprocessos.
-
-Després d'una interrupció, torna a carregar el script de la cua i repeteix la mateixa crida `start_mundlak_phylogeny_weekend(..., check_only = FALSE)`, amb els mateixos arguments i fonts. Cada model valida els seus checkpoints: reutilitza els fits complets i recupera la preparació o els paràmetres de l'optimització quan estan disponibles. No es decideix només a partir del resum de la cua.
-
-Es desen la preparació portable, avaluacions finites durant l'optimització, el resultat de l'optimitzador **abans** del càlcul d'incertesa, i el fit final. L'interval de checkpoint de l'optimització és de 120 segons quan una avaluació acaba. Un càlcul natiu llarg, com la construcció de l'Hessià, no pot desar-se a mig executar: després d'una caiguda aquest pas es repeteix.
-
-Per defecte, un error o uns controls numèrics no acceptats queden registrats i la cua continua amb els models següents. Per aturar-se al primer problema, utilitza `stop_on_error = TRUE` en iniciar-la. Els models complets no es tornen a optimitzar només perquè la cua es reprengui; un fit complet però no acceptat necessita revisar-ne el diagnòstic abans de decidir un refinament.
-
-## Resultats i interpretació
-
-- Cua i registres: `output/mundlak_phylogeny_weekend/`.
-- Ambientals: `output/phenology_plasticity/environment_mundlak_phylogeny_15km/`.
-- Demogràfics: `output/population_trends/mundlak_demography_phylogeny_15km/`.
-
-El monitor mostra el fitxer de registre i la carpeta de resultats del model actiu. `queue_results_latest.csv` recull l'estat dels cinc ajustaments. Cada model exporta controls numèrics, comparacions dels coeficients i errors estàndard, components de variància i comparació ML/AIC. En els demogràfics també es comparen els quatre efectes de plasticitat sobre la tendència (onset/offset × within/between) i els contrastos within–between amb la covariància completa.
-
-Les inferències només s'exporten si passen els controls: convergència, Hessià/covariància definits positius i norma del gradient escalat per covariància inferior a 0.05. També es conserva el gradient brut com a diagnòstic. La variància filogenètica nul·la és una frontera: no s'assigna automàticament un p-valor chi-quadrat estàndard a la seva comparació. L'anàlisi utilitza un únic arbre; no propaga incertesa de l'arbre ni de les plasticitats estimades a la primera etapa.
-
-La validació dels scripts utilitza casos sintètics petits i proves de control de la cua. Els cinc models amb les dades reals del projecte encara s'han d'executar al teu ordinador.
-
-## Validació executada
-
-En R 4.5.3/Linux, TMB 1.9.19 i sdmTMB 1.1.0:
-
-- Versemblança demogràfica: 32 comprovacions numèriques, inclosa equivalència amb el model independent quan es desactiva la filogènia, AR1 amb anys absents i gradients.
-- Fonts demogràfiques: 31 comprovacions de signatures, mostra, disseny i rebuig d'entrades inconsistents; exportació estadística: 99 comprovacions.
-- Driver demogràfic complet: 24 comprovacions sobre ajustaments sintètics dels dos grups, fit guardat, exports, reutilització en una sessió nova i recuperació del checkpoint anterior al càlcul d'incertesa.
-- Cua: 34 comprovacions simulades dels cinc models, errors, caigudes del worker, represa i aturada; 9 comprovacions addicionals amb el controlador i els workers reals de les dues famílies sobre fits sintètics petits.
-- Versió ambiental: comprovada amb les sis formulacions onset/offset de les versions independents 1.1/1.2/1.3, ajustaments sintètics i reutilització dels fits.
-
-Aquestes proves no mesuren el cost de les dades completes i no constitueixen una execució a Windows.
+Les proves utilitzen metadades sintètiques, dades petites en memòria i el procés de prova existent. No ajusten models ni compilen. La validació dels grans ajustos reals i les proves natives de versemblança queden per al llançament explícit posterior.
