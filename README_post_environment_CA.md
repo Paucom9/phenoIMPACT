@@ -9,6 +9,7 @@ Carregar el script només defineix funcions; no inicia cap procés.
 | --- | --- |
 | `env_mundlak_by_voltinism_qc_final_v3_resilient.R` | Quatre ajustos: onset i offset per uni/multivoltines; vuit components ambientals within/between. |
 | `env_mundlak_wait_then_refine.R` | Els refinats es guarden a part. Cal consultar-los explícitament; els originals no són substituïts. |
+| `env_mundlak_refine_v2_isolated.R` | La v2 substitueix la v1 per a l'offset univoltí i els dos onset; conserva l'offset multivoltí refinat de v1. Es comproven el controlador i els processos fills. |
 | `extract_compare_offset_qc_plasticity_v1_3.R` | Extractor anterior d'offset: no admet la nova formulació ni l'onset separat. Es conserva com a historial. |
 | `prepare_final_qc_abundance_inputs.R` | Preservava exactament l'onset antic. Aquesta regla no serveix per a la nova extracció. |
 | `10f_mundlak_plasticity_demography_QC_FINAL_spatial_15km_RECOVERY.R` | Es reutilitzen la versemblança, optimització, checkpoints, estimació d'incertesa i contrasts. S'ha separat l'exportació perquè es pugui recuperar sense repetir l'ajust. |
@@ -20,7 +21,7 @@ No es canvia la cua ambiental ni s'engega cap model durant aquesta preparació.
 
 ## Comprovar ara, sense carregar models
 
-Des de l'R project de phenoIMPACT, després de `git pull`:
+Des de l'R project de phenoIMPACT, amb el script actualitzat:
 
 ```r
 source("post_environment_mundlak.R", encoding = "UTF-8")
@@ -28,7 +29,10 @@ pheno_post_env$preflight()
 ```
 
 El preflight llegeix metadades i fitxers petits de comprovacions. Mostra l'estat
-dels quatre ajustos i si encara viu algun worker ambiental o de refinament.
+dels quatre ajustos, la versió de refinament seleccionada i si encara viu algun
+worker ambiental, de v1, el controlador de v2 o un dels seus processos fills.
+També detecta un fill viu encara que el controlador ja no existeixi. Si no es pot
+comprovar un procés o les metadades de propietat són corruptes, atura la comprovació.
 No carrega `fit_mundlak.rds`, els refinats ni els ajustos demogràfics.
 
 La font ambiental predeterminada és:
@@ -37,10 +41,21 @@ La font ambiental predeterminada és:
 output/phenology_plasticity/environment_mundlak_by_voltinism_qc_final_15km/run_de0890c85d4a
 ```
 
-Per a cada ajust, si hi ha una carpeta de refinament, el flux exigeix el seu
-`fit_refined_final.rds`, el marcador de finalització i comprovacions acceptades.
-No torna silenciosament a l'original si el refinat és incomplet o problemàtic.
-Si no hi ha refinament, exigeix l'original `FIT_OK`.
+La selecció és explícita:
+
+- Sense cua v2, es conserva la selecció v1/original anterior.
+- Amb `postfit_refinement_queue_v2_isolated`, l'offset univoltí i els dos onset
+  esperen el resultat v2, encara que el seu procés no hagi començat. Un resultat
+  v1 anterior no substitueix silenciosament una v2 pendent o fallida.
+- L'offset multivoltí conserva el refinat de v1. Si la configuració v2 indica
+  una carpeta `old_refinement` diferent, es respecta aquesta procedència.
+- Cada refinat exigeix `fit_refined_final.rds`, `refinement_completed.rds`
+  i comprovacions acceptades. Un resum de cua, per si sol, no valida un model.
+
+Els fitxers seleccionats i `refinement_version` es conserven a
+`environmental_sources.csv`. Abans de cada etapa es torna a comprovar que no hi
+hagi processos ambientals/refinaments actius i que la selecció no hagi canviat.
+Aquest comprovador no modifica ni atura les cues.
 
 La condició ambiental manté el criteri existent: convergència 0, Hessiana positiva
 i gradient màxim < 0,001. El valor 0,002998022 comunicat per a

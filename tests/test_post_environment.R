@@ -157,6 +157,140 @@ unlink(file.path(ref, "refinement_completed.rds"))
 check(!e$select_environment(tmp)$ready[2], "Incomplete refinement was accepted")
 cat("PASS: original/refined source selection and strict numerical gates\n")
 
+# 3b. Mixed v1/v2 queues, pending v2 work, provenance, and orphan child gates.
+write_refinement <- function(path, analysis, accepted = TRUE) {
+  dir.create(path, recursive = TRUE, showWarnings = FALSE)
+  file.create(file.path(path, "fit_refined_final.rds"))
+  saveRDS(list(summary = data.frame(analysis = analysis,
+    refinement_status = if (accepted) "FIT_OK_REFINED" else
+      "NUMERICAL_REVIEW_REQUIRED_AFTER_MAX_PASSES")),
+    file.path(path, "refinement_completed.rds"))
+  write.csv(data.frame(numerical_checks_ok = accepted, convergence_code = 0L,
+    pdHess = TRUE, max_abs_gradient = if (accepted) .0001 else .002998022),
+    file.path(path, "fit_checks_refined.csv"), row.names = FALSE)
+}
+write_refinement(ref, "offset_multivoltine")
+onset_v1 <- file.path(tmp, "postfit_refinement_queue_v1", "onset_multivoltine")
+write_refinement(onset_v1, "onset_multivoltine")
+v2 <- file.path(tmp, "postfit_refinement_queue_v2_isolated")
+dir.create(v2)
+selected <- e$select_environment(tmp)
+check(identical(selected$refinement_version, c("v2", "v1", "v2", "v2")),
+      "Pending v2 queue did not take precedence over v1/original")
+check(identical(selected$ready, c(FALSE, TRUE, FALSE, FALSE)),
+      "Scheduled but unstarted v2 model was accepted")
+check(all(selected$status[c(1, 3, 4)] == "REFINEMENT_NOT_STARTED"),
+      "Pending v2 status is not explicit")
+for (a in e$V2_ANALYSES) write_refinement(file.path(v2, a), a)
+selected <- e$select_environment(tmp)
+check(all(selected$ready), "Mixed accepted v1/v2 sources were rejected")
+check(selected$fit[2] == file.path(ref, "fit_refined_final.rds"),
+      "Carried-forward offset multivoltine lost its v1 source")
+check(selected$fit[1] == file.path(v2, "onset_multivoltine", "fit_refined_final.rds"),
+      "Old onset v1 took precedence over accepted v2")
+
+bad_v2 <- file.path(v2, "onset_multivoltine")
+write_refinement(bad_v2, "onset_multivoltine", accepted = FALSE)
+check(!e$select_environment(tmp)$ready[1], "Failed v2 fell back to accepted v1")
+write_refinement(bad_v2, "onset_multivoltine")
+for (missing_file in c("fit_refined_final.rds", "refinement_completed.rds",
+                       "fit_checks_refined.csv")) {
+  unlink(file.path(bad_v2, missing_file))
+  check(!e$select_environment(tmp)$ready[1], paste("Accepted v2 without", missing_file))
+  write_refinement(bad_v2, "onset_multivoltine")
+}
+write_refinement(bad_v2, "onset_univoltine")
+fails(e$select_environment(tmp), "identity mismatch")
+write_refinement(bad_v2, "onset_multivoltine")
+write.csv(data.frame(numerical_checks_ok = TRUE, convergence_code = 0L,
+  pdHess = TRUE, max_abs_gradient = .001), file.path(bad_v2, "fit_checks_refined.csv"),
+  row.names = FALSE)
+check(!e$select_environment(tmp)$ready[1], "Exact gradient threshold was relaxed")
+write_refinement(bad_v2, "onset_multivoltine")
+
+# The isolated worker can report OK while the actual refinement still fails.
+saveRDS(list(status = "OK"), file.path(bad_v2, "isolated_worker_result.rds"))
+unlink(file.path(bad_v2, "refinement_completed.rds"))
+check(!e$select_environment(tmp)$ready[1], "Worker completion replaced numerical acceptance")
+write_refinement(bad_v2, "onset_multivoltine")
+
+old_ref <- file.path(tmp, "configured_v1")
+write_refinement(file.path(old_ref, "offset_multivoltine"), "offset_multivoltine")
+saveRDS(list(source_run = tmp, old_refinement = old_ref),
+        file.path(v2, "refinement_config.rds"))
+check(e$select_environment(tmp)$fit[2] ==
+      file.path(old_ref, "offset_multivoltine", "fit_refined_final.rds"),
+      "V2 configured carried-forward v1 path ignored")
+saveRDS(list(source_run = v2, old_refinement = old_ref),
+        file.path(v2, "refinement_config.rds"))
+fails(e$select_environment(tmp), "different environmental run")
+saveRDS(list(source_run = tmp, old_refinement = old_ref),
+        file.path(v2, "refinement_config.rds"))
+
+# Process liveness is simulated; no workers are launched or terminated.
+real_alive <- e$alive
+e$alive <- function(owner) isTRUE(owner$test_alive)
+owner_paths <- c(file.path(tmp, "worker_owner.rds"),
+  file.path(tmp, "postfit_refinement_queue_v1", "worker_owner.rds"),
+  file.path(old_ref, "worker_owner.rds"), file.path(v2, "worker_owner.rds"),
+  file.path(v2, "offset_univoltine", "isolated_worker_owner.rds"))
+for (owner_path in owner_paths) {
+  saveRDS(list(pid = 42L, create_time = 1, test_alive = TRUE), owner_path)
+  workers <- e$environmental_workers(tmp)
+  check(any(workers$active) && workers$owner_file[workers$active] == owner_path,
+        paste("Active worker missed:", owner_path))
+  fails(e$require_environment_idle(tmp), "worker is active")
+  fails(e$child_stage(list(environment_run = tmp), "extract_one", "onset_univoltine"),
+        "worker is active")
+  saveRDS(list(pid = 42L, create_time = 1, test_alive = FALSE), owner_path)
+}
+check(!any(e$environmental_workers(tmp)$active), "Dead owners block the workflow")
+e$require_environment_idle(tmp)
+
+# Accepted models must remain blocked by a live child with a dead controller.
+child_owner <- tail(owner_paths, 1)
+saveRDS(list(pid = 42L, create_time = 1, test_alive = TRUE), child_owner)
+demo <- file.path(tmp, "demography")
+dir.create(demo)
+saveRDS(list(source_run = tmp), file.path(demo, "run_config.rds"))
+for (g in e$GROUPS) {
+  file.create(file.path(demo, paste0("prepared_mundlak_", g, ".rds")))
+  dir.create(file.path(demo, paste0(g, "__mundlak")))
+  file.create(file.path(demo, paste0(g, "__mundlak"), "fit.rds"))
+}
+invisible(capture.output(pf <- e$preflight(tmp, tmp, demo)))
+check(all(pf$environment$ready) && pf$active && !pf$ready,
+      "Preflight did not block accepted sources while an orphan v2 child is active")
+real_packages <- e$packages
+e$packages <- function(names) invisible(TRUE)
+fails(e$run(project_root = tmp, environment_run = tmp, demography_run = demo,
+            mode = "prepare"), "Sources are not ready")
+e$packages <- real_packages
+check(!dir.exists(file.path(tmp, "output")), "Blocked run created output or launched work")
+
+saveRDS(list(pid = 42L, create_time = 1, test_alive = FALSE), child_owner)
+selected <- e$select_environment(tmp)
+write_refinement(bad_v2, "onset_multivoltine", accepted = FALSE)
+fails(e$resources(list(environment_run = tmp, environment = selected)),
+      "source selection changed")
+write_refinement(bad_v2, "onset_multivoltine")
+saveRDS(list(pid = 42L), child_owner)
+fails(e$environmental_workers(tmp), "Invalid worker ownership")
+writeLines("invalid RDS", child_owner)
+fails(e$environmental_workers(tmp), "unknown input format")
+unlink(child_owner)
+e$alive <- real_alive
+cat("PASS: mixed v1/v2, pending/failed/missing v2, provenance, controller/child guards, blocked launch\n")
+
+if (requireNamespace("ps", quietly = TRUE)) {
+  owner <- list(pid = Sys.getpid(), create_time = ps::ps_create_time(ps::ps_handle()))
+  check(e$alive(owner), "Current process not detected")
+  owner$create_time <- owner$create_time - 10
+  check(!e$alive(owner), "Reused PID with different creation time accepted")
+  check(!e$alive(list(pid = 2147483647L, create_time = 1)), "Missing PID treated as alive")
+  cat("PASS: native process identity and missing PID handling\n")
+} else cat("SKIP: native ps checks (package not accessible); synthetic worker gates passed\n")
+
 # 4. Export integration and recovery: new predictors must not produce an old/new LRT.
 out <- tempfile(); dir.create(out); dir.create(file.path(out, "univoltine__mundlak"))
 cfg <- list(out = out, progress = file.path(out, "progress.rds"))
@@ -193,5 +327,8 @@ check(diag$distribution$n == nrow(p$frame) && diag$temporal$n_pairs[2] > 0,
 check(all(is.finite(diag$site_year$residual)), "Non-finite residuals")
 fails(e$diagnostic_tables(p, within(fit, signature <- "wrong")), "different fits")
 cat("PASS: conditional residuals and latent innovation diagnostics\n")
-unlink(c(tmp, out), recursive = TRUE)
+cleanup_paths <- normalizePath(c(tmp, out), winslash = "/", mustWork = TRUE)
+cleanup_parent <- paste0(normalizePath(tempdir(), winslash = "/", mustWork = TRUE), "/")
+check(all(startsWith(cleanup_paths, cleanup_parent)), "Test cleanup escaped temporary directory")
+unlink(cleanup_paths, recursive = TRUE)
 cat("ALL POST-ENVIRONMENT CONTRACT TESTS PASSED\n")

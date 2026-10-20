@@ -4,11 +4,12 @@
 # One large R process at a time. Original fits/inputs are read-only.
 
 pheno_post_env <- local({
-  VERSION <- "post_environment_mundlak_1.0"
+  VERSION <- "post_environment_mundlak_1.1"
   ROOT <- "E:/phenoIMPACT project/code/phenoIMPACT"
   GROUPS <- c("multivoltine", "univoltine")
   ANALYSES <- c("onset_multivoltine", "offset_multivoltine",
                 "onset_univoltine", "offset_univoltine")
+  V2_ANALYSES <- c("offset_univoltine", "onset_multivoltine", "onset_univoltine")
   ENGINE <- "10f_mundlak_plasticity_demography_QC_FINAL_spatial_15km_RECOVERY.R"
   state <- new.env(parent = emptyenv())
   need <- function(ok, message) if (!isTRUE(ok)) stop(message, call. = FALSE)
@@ -54,15 +55,58 @@ pheno_post_env <- local({
     packages("ps")
     tryCatch({
       h <- ps::ps_handle(owner$pid)
-      ps::ps_is_running(h) && isTRUE(all.equal(as.numeric(ps::ps_create_time(h)),
-        as.numeric(owner$create_time), tolerance = 1e-6))
-    }, error = function(e) FALSE)
+      ps::ps_is_running(h) && isTRUE(abs(as.numeric(ps::ps_create_time(h)) -
+        as.numeric(owner$create_time)) < 0.001)
+    }, error = function(e) {
+      if (inherits(e, "no_such_process")) return(FALSE)
+      stop("Cannot verify worker process: ", conditionMessage(e), call. = FALSE)
+    })
+  }
+  active_owner <- function(path) {
+    if (!file.exists(path)) return(FALSE)
+    owner <- readRDS(path)
+    need(is.list(owner) && length(owner$pid) == 1L && is.finite(owner$pid) &&
+      length(owner$create_time) == 1L && is.finite(as.numeric(owner$create_time)),
+      paste("Invalid worker ownership metadata:", path))
+    alive(owner)
   }
   active_run <- function(run) {
-    f <- file.path(run, "worker_owner.rds")
-    if (!file.exists(f)) return(FALSE)
     # A corrupt ownership file is not evidence that a worker has stopped.
-    alive(readRDS(f))
+    active_owner(file.path(run, "worker_owner.rds"))
+  }
+  refinement_roots <- function(run) {
+    v1 <- file.path(run, "postfit_refinement_queue_v1")
+    v2 <- file.path(run, "postfit_refinement_queue_v2_isolated")
+    cfg_path <- file.path(v2, "refinement_config.rds")
+    if (file.exists(cfg_path)) {
+      cfg <- readRDS(cfg_path)
+      need(is.character(cfg$source_run) && length(cfg$source_run) == 1L &&
+        identical(normalizePath(cfg$source_run, winslash = "/", mustWork = TRUE),
+                  normalizePath(run, winslash = "/", mustWork = TRUE)),
+        "V2 refinement configuration belongs to a different environmental run.")
+      need(is.character(cfg$old_refinement) && length(cfg$old_refinement) == 1L &&
+        !is.na(cfg$old_refinement) && nzchar(cfg$old_refinement),
+        "V2 refinement configuration lacks its v1 source.")
+      v1 <- cfg$old_refinement
+    }
+    list(v1 = v1, v2 = v2)
+  }
+  environmental_workers <- function(run) {
+    roots <- refinement_roots(run)
+    paths <- unique(c(
+      file.path(run, "worker_owner.rds"),
+      file.path(run, "postfit_refinement_queue_v1", "worker_owner.rds"),
+      file.path(roots$v1, "worker_owner.rds"),
+      file.path(roots$v2, "worker_owner.rds"),
+      file.path(roots$v2, ANALYSES, "isolated_worker_owner.rds")))
+    paths <- paths[file.exists(paths)]
+    data.frame(owner_file = paths,
+      active = vapply(paths, active_owner, logical(1), USE.NAMES = FALSE),
+      stringsAsFactors = FALSE)
+  }
+  require_environment_idle <- function(run) {
+    need(!any(environmental_workers(run)$active),
+         "An environmental/refinement worker is active (original, v1 or v2).")
   }
   file_manifest <- function(paths) {
     paths <- unique(unname(normalizePath(paths, winslash = "/", mustWork = TRUE)))
@@ -86,9 +130,20 @@ pheno_post_env <- local({
 
   # Only small completion/check files are read here; never load a fitted model.
   select_environment <- function(run) {
+    roots <- refinement_roots(run)
+    v2_exists <- dir.exists(roots$v2)
     rows <- lapply(ANALYSES, function(a) {
       src <- file.path(run, a)
-      ref <- file.path(run, "postfit_refinement_queue_v1", a)
+      ref1 <- file.path(roots$v1, a)
+      ref2 <- file.path(roots$v2, a)
+      # A scheduled v2 model supersedes v1 even before its child directory exists.
+      # Offset multivoltine is carried forward from v1 by the isolated v2 queue.
+      refinement_version <- if (dir.exists(ref2) || (v2_exists && a %in% V2_ANALYSES)) {
+        "v2"
+      } else if (dir.exists(ref1) || (v2_exists && a == "offset_multivoltine")) {
+        "v1"
+      } else "none"
+      ref <- if (refinement_version == "v2") ref2 else ref1
       done <- file.path(src, "completed.rds")
       prep <- file.path(src, "prepared_input.rds")
       original <- file.path(src, "fit_mundlak.rds")
@@ -105,15 +160,16 @@ pheno_post_env <- local({
         original_signature <- z$signature
       }
       # Any refinement artifact takes precedence. Never silently fall back.
-      if (dir.exists(ref)) {
+      if (refinement_version != "none") {
         kind <- "refined"
         fit <- file.path(ref, "fit_refined_final.rds")
         check <- file.path(ref, "fit_checks_refined.csv")
         marker <- file.path(ref, "refinement_completed.rds")
-        status <- "REFINEMENT_NOT_COMPLETED"
+        status <- if (dir.exists(ref)) "REFINEMENT_NOT_COMPLETED" else "REFINEMENT_NOT_STARTED"
         if (file.exists(marker)) {
           z <- readRDS(marker)
-          need(nrow(z$summary) == 1L && identical(z$summary$analysis, a),
+          need(is.data.frame(z$summary) && nrow(z$summary) == 1L &&
+                 identical(z$summary$analysis, a),
                paste("Refinement marker identity mismatch:", a))
           status <- as.character(z$summary$refinement_status)
         }
@@ -124,7 +180,8 @@ pheno_post_env <- local({
         ready <- status %in% c("FIT_OK", "FIT_OK_REFINED", "FIT_OK_AFTER_REBUILD") &&
           accepted_checks(z)
       }
-      data.frame(analysis = a, kind = kind, status = status, ready = ready,
+      data.frame(analysis = a, kind = kind, refinement_version = refinement_version,
+                 status = status, ready = ready,
                  fit = fit, prepared = prep, checks = check, marker = marker,
                  original_marker = done, original_signature = original_signature,
                  stringsAsFactors = FALSE)
@@ -155,19 +212,20 @@ pheno_post_env <- local({
   preflight <- function(project_root = ROOT, environment_run = default_env(project_root),
                         demography_run = NULL) {
     env <- select_environment(environment_run)
-    active <- active_run(environment_run) ||
-      active_run(file.path(environment_run, "postfit_refinement_queue_v1"))
+    workers <- environmental_workers(environment_run)
+    active <- any(workers$active)
     demo_error <- NULL
     demo <- tryCatch(resolve_demography(project_root, demography_run), error = function(e) {
       demo_error <<- conditionMessage(e); NULL
     })
-    print(env[c("analysis", "kind", "status", "ready")], row.names = FALSE)
+    print(env[c("analysis", "kind", "refinement_version", "status", "ready")], row.names = FALSE)
     message("Environmental/refinement worker active: ", active)
+    if (active) print(workers[workers$active, , drop = FALSE], row.names = FALSE)
     if (!is.null(demo_error)) message(demo_error)
     if (!is.null(demo)) message("Previous demographic run: ", demo$run)
     message("Metadata only: no model loaded and no process started.")
     invisible(list(ready = all(env$ready) && !active && !is.null(demo),
-                   environment = env, active = active, demography = demo))
+                   environment = env, active = active, workers = workers, demography = demo))
   }
 
   spec <- function(analysis) {
@@ -653,6 +711,10 @@ pheno_post_env <- local({
   }
 
   resources <- function(cfg) {
+    require_environment_idle(cfg$environment_run)
+    selected <- select_environment(cfg$environment_run)
+    need(all(selected$ready) && identical(selected, cfg$environment),
+         "Environmental source selection changed after preflight. Restart run().")
     packages("ps")
     free <- as.numeric(ps::ps_system_memory()$avail) / 1024^3
     disk <- as.numeric(ps::ps_disk_usage(cfg$out)$available) / 1024^3
@@ -660,9 +722,6 @@ pheno_post_env <- local({
          paste("Insufficient available RAM:", round(free, 1), "GiB. Resume when memory is available."))
     need(is.finite(disk) && disk >= cfg$min_disk,
          paste("Insufficient disk:", round(disk, 1), "GiB."))
-    need(!active_run(cfg$environment_run) &&
-           !active_run(file.path(cfg$environment_run, "postfit_refinement_queue_v1")),
-         "An environmental/refinement worker has restarted.")
   }
   child_stage <- function(cfg, stage, value) {
     resources(cfg); check_manifest(cfg)
