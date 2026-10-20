@@ -1325,13 +1325,8 @@ pheno_mundlak <- local({
         group
       )
 
-      return(
-        if (isTRUE(fit$checks$numerical_checks_ok)) {
-          "FIT_OK_CACHED"
-        } else {
-          "NUMERICAL_REVIEW_REQUIRED"
-        }
-      )
+      # Recreate missing exports after an interruption without reoptimizing.
+      return(export_fitted(cfg, group, p, fit))
     }
 
     data <- p$data
@@ -1346,6 +1341,7 @@ pheno_mundlak <- local({
       "nested_start_replay.csv"
     )
 
+    if (!isTRUE(p$predictors_updated)) {
     if (!file.exists(replay_file)) {
 
       phase(
@@ -1437,6 +1433,8 @@ pheno_mundlak <- local({
         paste(group, "saved nested-start replay is invalid.")
       )
     }
+
+    } # Original nesting check applies only when predictors are unchanged.
 
     pars <- p$parameters
 
@@ -1851,7 +1849,8 @@ pheno_mundlak <- local({
       is.finite(scaled_gradient) &&
       scaled_gradient < GRAD_TOL &&
       is.finite(opt$objective) &&
-      opt$objective <= p$source_fit_objective + 0.001
+      (isTRUE(p$predictors_updated) ||
+         opt$objective <= p$source_fit_objective + 0.001)
 
     checks <- data.frame(
       group = group,
@@ -1869,7 +1868,8 @@ pheno_mundlak <- local({
         2 * opt$objective +
         2 * length(opt$par),
       objective_change_from_final_qc_source =
-        opt$objective - p$source_fit_objective,
+        if (isTRUE(p$predictors_updated)) NA_real_ else
+          opt$objective - p$source_fit_objective,
       nobs = nrow(p$frame),
       spatial_range_km =
         as.numeric(report$range),
@@ -1911,6 +1911,19 @@ pheno_mundlak <- local({
       fit,
       fit_file
     )
+
+    export_fitted(cfg, group, p, fit)
+  }
+
+  # Also used when fit.rds exists but a previous export was interrupted.
+  export_fitted <- function(cfg, group, p, fit) {
+    out_group <- file.path(cfg$out, paste0(group, "__mundlak"))
+    checks <- fit$checks
+    beta <- fit$beta
+    V <- fit$V
+    warnings <- fit$warnings
+    good <- isTRUE(checks$numerical_checks_ok)
+    scaled_gradient <- checks$gradient_covariance_norm
 
     csv(
       checks,
@@ -2022,6 +2035,10 @@ pheno_mundlak <- local({
         "+1 original group-wide SD in species mean offset delay"
       }
     )
+
+    if (isTRUE(p$predictors_updated)) {
+      key$unit <- sub("original group-wide", "updated group-wide", key$unit, fixed = TRUE)
+    }
 
     key$ratio_of_decadal_growth_factors <-
       exp(key$estimate)
@@ -2425,6 +2442,7 @@ pheno_mundlak <- local({
     # Compare the original bridge coefficient with within and between effects
     # -----------------------------------------------------------------------
 
+    if (!isTRUE(p$predictors_updated)) {
     source_fx <- fixed_table(
       p$source_fit_beta,
       p$source_fit_V
@@ -2608,6 +2626,8 @@ pheno_mundlak <- local({
         "nested_within_between_LRT.csv"
       )
     )
+
+    } # Updated plasticities do not form a nested pair with the old model.
 
     phase(
       cfg,
