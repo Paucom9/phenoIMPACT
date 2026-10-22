@@ -8,7 +8,7 @@ plot_environment_mundlak_nature <- function(
     environment_run = file.path(project_root, "output", "phenology_plasticity",
       "environment_mundlak_by_voltinism_qc_final_15km", "run_de0890c85d4a"),
     out_dir = file.path(environment_run, "figures_environment_nature"),
-    font_family = "Arial", width_mm = 180, height_mm = 138,
+    font_family = "Arial", width_mm = 180, height_mm = 140,
     base_size = 9, dpi = 600, gradient_limit = 2,
     range_probs = c(.025, .975), show_plot = interactive()) {
 
@@ -126,21 +126,16 @@ plot_environment_mundlak_nature <- function(
   plots <- list()
   rowlimits <- lapply(c("onset_", "offset_"), function(prefix) {
     d <- dat[startsWith(dat$analysis, prefix), ]
-    lim <- range(c(d$lower, d$upper, 0)); lim + c(-.30,.07)*diff(lim)
+    lim <- range(c(d$lower, d$upper, 0)); lim + c(-.07,.07)*diff(lim)
   })
   for (i in seq_along(analyses)) {
     a <- analyses[i]; z <- dat[dat$analysis == a, ]; tt <- tst[tst$analysis == a, ]
     lim <- rowlimits[[if (i <= 2) 1 else 2]]
-    tt$x <- min(z$x); tt$y <- lim[1] + diff(lim) * (.035 + .045 * (3:0))
-    tt$annotation <- tt$symbol
     plots[[i]] <- ggplot2::ggplot(z, ggplot2::aes(x, slope, colour = moderator, fill = moderator)) +
       ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50", linewidth = .36) +
       ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper), alpha = .10,
                            colour = NA, show.legend = FALSE) +
       ggplot2::geom_line(ggplot2::aes(linetype = line_type), linewidth = .6) +
-      ggplot2::geom_text(data = tt, ggplot2::aes(x = x, y = y, label = annotation,
-         colour = moderator), inherit.aes = FALSE, hjust = 0, family = font_family,
-         size = 2.8, show.legend = FALSE) +
       ggplot2::scale_colour_manual(values = colours, drop = FALSE) +
       ggplot2::scale_fill_manual(values = colours, drop = FALSE, guide = "none") +
       ggplot2::scale_linetype_manual(values = c(Supported = "solid", `Not supported` = "dashed"),
@@ -150,30 +145,40 @@ plot_environment_mundlak_nature <- function(
       ggplot2::labs(tag = letters[i], colour = NULL,
         title = if (i <= 2) c("Univoltine", "Multivoltine")[i] else NULL,
         x = NULL,
-        y = if (i %% 2 == 1) paste0(if (i == 1) "Onset" else "Offset",
-          " plasticity") else NULL) +
+        y = NULL) +
       ggplot2::theme_classic(base_family = font_family, base_size = base_size) +
       ggplot2::theme(axis.line = ggplot2::element_line(linewidth = .36),
         axis.ticks = ggplot2::element_line(linewidth = .36),
         plot.title = ggplot2::element_text(face = "bold", hjust = .5, size = base_size+1),
         plot.tag = ggplot2::element_text(face = "bold", size = base_size),
-        legend.position = "bottom", legend.key.width = grid::unit(9,"mm"),
+        aspect.ratio = 1,
+        legend.position = "right", legend.key.width = grid::unit(8,"mm"),
+        legend.text = ggplot2::element_text(size = base_size - 1),
         legend.spacing.y = grid::unit(0, "pt"), legend.margin = ggplot2::margin(0,0,0,0),
-        plot.margin = ggplot2::margin(5,7,5,5)) +
-      ggplot2::guides(colour = ggplot2::guide_legend(nrow = 2, byrow = TRUE,
+        plot.margin = ggplot2::margin(3,3,3,3)) +
+      ggplot2::guides(colour = ggplot2::guide_legend(ncol = 1, byrow = TRUE,
                                                    override.aes = list(linetype = "solid")))
   }
-  body <- patchwork::wrap_plots(plots, ncol = 2, guides = "collect") &
-    ggplot2::theme(legend.position = "bottom")
-  unit_label <- patchwork::wrap_elements(full = grid::textGrob(
-    "Days per SD of temperature anomaly", rot = 90,
-    gp = grid::gpar(fontfamily = font_family, fontsize = base_size)))
-  x_label <- patchwork::wrap_elements(full = grid::textGrob(
-    "Within-species environmental gradient (SD)",
-    gp = grid::gpar(fontfamily = font_family, fontsize = base_size)))
+  # Explicit guide area keeps the shared X label centred on the plots,
+  # excluding the vertical legend. Equal aspect ratios make plotting areas square.
+  text_strip <- function(label, rotate = 0, bold = FALSE) {
+    patchwork::wrap_elements(full = grid::textGrob(label, rot = rotate,
+      gp = grid::gpar(fontfamily = font_family,
+        fontsize = if (bold) base_size + 1 else base_size,
+        fontface = if (bold) "bold" else "plain")))
+  }
+  unit_label <- text_strip("Days per SD of temperature anomaly", 90)
+  onset_label <- text_strip("Onset plasticity", 90, TRUE)
+  offset_label <- text_strip("Offset plasticity", 90, TRUE)
+  x_label <- text_strip("Within-species environmental gradient (SD)")
   figure <- patchwork::wrap_plots(
-    unit_label, body, patchwork::plot_spacer(), x_label,
-    ncol = 2, widths = c(.035, 1), heights = c(1, .045))
+    U = unit_label, R = onset_label, S = offset_label,
+    A = plots[[1]], B = plots[[2]], C = plots[[3]], D = plots[[4]],
+    G = patchwork::guide_area(), X = x_label,
+    design = "URABG\nUSCDG\n##XX#",
+    widths = c(.045, .055, 1, 1, .66),
+    heights = c(1, 1, .055), guides = "collect") &
+    ggplot2::theme(legend.position = "right", legend.direction = "vertical")
   # A new subfolder on each execution preserves previous exports.
   out <- file.path(out_dir, paste0("export_", format(Sys.time(), "%Y%m%d_%H%M%S")))
   need(!dir.exists(out), "Export folder already exists; retry in a second.")
@@ -197,8 +202,7 @@ plot_environment_mundlak_nature <- function(
     "These are not prediction intervals or population-specific random-slope intervals.",
     "Curves restricted to central observed marginal ranges and gradient_limit; joint support is not guaranteed.",
     "Solid/dashed: unadjusted two-sided Wald interaction p < .05 / >= .05.",
-    "Stars refer to interactions, not conditional slopes at individual X values.",
-    "Significance codes top-to-bottom: photoperiod, background temperature, predictability, warming trend.",
+    "No significance codes are drawn; line types refer to interactions, not slopes at individual X values.",
     "Negative slopes indicate advancement, positive slopes delay. A positive interaction need not imply positive slopes.",
     "All curves share the same reference slope at X=0 within each model.",
     "Offset response is conditional on annual onset; its additive term does not enter the anomaly derivative.",
