@@ -37,7 +37,7 @@ plot_environment_mundlak_nature <- function(
   print(sources[c("analysis", "kind", "refinement_version", "status", "fit")], row.names = FALSE)
   mods <- c("photoperiod", "background", "predictability", "trend")
   labels <- c("Photoperiod", "Background temperature", "Temperature predictability", "Warming trend")
-  colours <- setNames(c("#009E73", "#0072B2", "#7570B3", "#D55E00"), labels)
+  colours <- setNames(c("#1b9e77", "#E6AB02", "#7570b3", "#d95f02"), labels)
   curves <- tests <- references <- list()
 
   for (i in seq_along(analyses)) {
@@ -175,8 +175,8 @@ plot_environment_mundlak_nature <- function(
     U = unit_label, R = onset_label, S = offset_label,
     A = plots[[1]], B = plots[[2]], C = plots[[3]], D = plots[[4]],
     G = patchwork::guide_area(), X = x_label,
-    design = "URABG\nUSCDG\n##XX#",
-    widths = c(.045, .055, 1, 1, .66),
+    design = "RUABG\nSUCDG\n##XX#",
+    widths = c(.055, .045, 1, 1, .66),
     heights = c(1, 1, .055), guides = "collect") &
     ggplot2::theme(legend.position = "right", legend.direction = "vertical")
   # A new subfolder on each execution preserves previous exports.
