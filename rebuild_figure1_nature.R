@@ -23,9 +23,14 @@ rebuild_figure1_nature <- function(
     candidates <- list.dirs(file.path(project_root, "output", "figures"),
       recursive = FALSE, full.names = TRUE)
     candidates <- candidates[grepl("^figure1_nature_", basename(candidates))]
-    candidates <- candidates[vapply(candidates, function(folder)
-      all(file.exists(file.path(folder, paste0("fig1", rep(c("a","b","c"), each=2),
-        rep(c(".png",".pdf"), 3)))), logical(1))]
+    expected_panels <- paste0(
+      "fig1", rep(c("a", "b", "c"), each = 2),
+      rep(c(".png", ".pdf"), times = 3)
+    )
+    complete_panels <- vapply(candidates, function(folder) {
+      all(file.exists(file.path(folder, expected_panels)))
+    }, logical(1))
+    candidates <- candidates[complete_panels]
     if (length(candidates)) cached <- candidates[which.max(file.info(candidates)$mtime)]
   }
   plots <- NULL
