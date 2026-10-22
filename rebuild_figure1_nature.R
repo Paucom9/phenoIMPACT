@@ -4,16 +4,37 @@
 # fig1 <- rebuild_figure1_nature(pptx_file = file.choose())
 rebuild_figure1_nature <- function(
   project_root = "E:/phenoIMPACT project/code/phenoIMPACT",
-  pptx_file = file.choose()) {
+  pptx_file = file.choose(), reuse_panels = TRUE) {
   pkgs <- c("ggplot2", "xml2", "zip", "dplyr", "tidyr", "here", "sf",
             "rnaturalearth", "data.table", "mgcv", "lubridate", "purrr")
   missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Install missing packages: ", paste(missing, collapse = ", "))
   stopifnot(file.exists(pptx_file), capabilities("cairo"))
   pptx_file <- normalizePath(pptx_file, winslash = "/")
+  archive <- tryCatch(zip::zip_list(pptx_file), error = function(e)
+    stop("Cannot read the selected PPTX as a ZIP archive: ", conditionMessage(e)))
+  if (!"ppt/slides/slide1.xml" %in% archive$filename)
+    stop("The selected file is not the expected PPTX: ppt/slides/slide1.xml is absent.")
   previous <- getwd(); on.exit(setwd(previous), add = TRUE); setwd(project_root)
   out <- file.path(project_root, "output", "figures", paste0("figure1_nature_", format(Sys.time(), "%Y%m%d_%H%M%S")))
   dir.create(out, recursive = TRUE)
+  cached <- NULL
+  if (reuse_panels) {
+    candidates <- list.dirs(file.path(project_root, "output", "figures"),
+      recursive = FALSE, full.names = TRUE)
+    candidates <- candidates[grepl("^figure1_nature_", basename(candidates))]
+    candidates <- candidates[vapply(candidates, function(folder)
+      all(file.exists(file.path(folder, paste0("fig1", rep(c("a","b","c"), each=2),
+        rep(c(".png",".pdf"), 3))))), logical(1))]
+    if (length(candidates)) cached <- candidates[which.max(file.info(candidates)$mtime)]
+  }
+  plots <- NULL
+  if (!is.null(cached)) {
+    message("Reusing completed panels from: ", cached)
+    panel_files <- file.path(cached, paste0("fig1", rep(c("a","b","c"), each=2),
+      rep(c(".png",".pdf"), 3)))
+    if (!all(file.copy(panel_files, out))) stop("Could not copy cached panels.")
+  } else {
   # Evaluate source code on its own, removing session clearing and obsolete exports.
   # Original scripts, figures and data remain unchanged.
   run_panel <- function(script, object) {
@@ -60,12 +81,18 @@ rebuild_figure1_nature <- function(
     ggplot2::ggsave(file.path(out, paste0("fig1", name, ".pdf")), plots[[name]],
       width = size[1], height = size[2], device = grDevices::cairo_pdf, bg = "white")
   }
+  }
   # Reuse the PPTX composition and butterfly photographs unchanged.
   temp <- tempfile("fig1_pptx_"); dir.create(temp)
   on.exit(unlink(temp, recursive = TRUE), add = TRUE)
-  utils::unzip(pptx_file, exdir = temp)
+  local_pptx <- file.path(temp, "source.pptx")
+  if (!file.copy(pptx_file, local_pptx)) stop("Could not stage source PPTX.")
+  tryCatch(zip::unzip(local_pptx, exdir = temp), error = function(e)
+    stop("PowerPoint extraction failed: ", conditionMessage(e)))
+  unlink(local_pptx)
   slide_path <- file.path(temp, "ppt", "slides", "slide1.xml")
   rel_path <- file.path(temp, "ppt", "slides", "_rels", "slide1.xml.rels")
+  if (!file.exists(slide_path)) stop("PPTX extraction did not produce slide1.xml.")
   slide <- xml2::read_xml(slide_path); rel <- xml2::read_xml(rel_path)
   ns <- c(p = "http://schemas.openxmlformats.org/presentationml/2006/main",
     a = "http://schemas.openxmlformats.org/drawingml/2006/main",
