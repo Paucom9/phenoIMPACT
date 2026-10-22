@@ -10,6 +10,10 @@ fails<-function(expr,pattern) {
 }
 check(identical(names(pheno_demo_min10),c('preflight','run','status','review')),'API mismatch')
 check(identical(formals(e$run)$mode,quote(c('prepare','fit'))),'Preparation must be default')
+run_text<-paste(deparse(e$run),collapse=' ')
+check(all(vapply(c('cleanup = FALSE','cleanup_tree = FALSE','poll_connection = FALSE'),
+  function(x) grepl(x,run_text,fixed=TRUE),logical(1))),
+  'Detached controller must survive the launching R session')
 set.seed(20261023)
 species<-paste0('sp',c(4,2,7,1,5,3,6))
 sites<-data.frame(SITE_ID=paste0('site',c(3,1,5,2,4)),x_km=1:5,y_km=11:15,

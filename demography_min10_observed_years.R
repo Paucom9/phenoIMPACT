@@ -2,7 +2,7 @@
 # Sourcing defines the API only. The default run mode is preparation, not fitting.
 # Reuses the baseline's saved code/likelihood, not mutable root scripts.
 pheno_demo_min10 <- local({
-  VERSION <- 'demography_min10_observed_years_1.0.0'
+  VERSION <- 'demography_min10_observed_years_1.0.1'
   GROUPS <- c('multivoltine', 'univoltine')
   ROOT <- 'E:/phenoIMPACT project/code/phenoIMPACT'
   REL <- 'output/population_trends/post_environment_mundlak_15km/run_d984406cdf33'
@@ -377,7 +377,8 @@ pheno_demo_min10 <- local({
       e<-new.env(parent=globalenv()); sys.source(script,envir=e)
       environment(e$pheno_demo_min10$run)$controller(cfg)
     },args=list(script=cfg$script,cfg=cfg),libpath=cfg$libpaths,stdout=cfg$log,stderr='2>&1',
-      supervise=FALSE,user_profile=FALSE,system_profile=FALSE,
+      supervise=FALSE,cleanup=FALSE,cleanup_tree=FALSE,poll_connection=FALSE,
+      user_profile=FALSE,system_profile=FALSE,
       env=c(callr::rcmd_safe_env(),OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1'))
     on.exit(if(!launched) try(child$kill_tree(),silent=TRUE),add=TRUE)
     owner<-list(pid=child$get_pid(),create_time=ps::ps_create_time(ps::ps_handle(child$get_pid())),

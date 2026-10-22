@@ -63,6 +63,13 @@ job10 <- pheno_demo_min10$run(mode = "fit")
 pheno_demo_min10$status(job10)
 ```
 
+Des d'un llançador que elimina tots els descendents quan acaba, mantén una
+sessió de terminal oberta i executa `pheno_demo_min10$run(mode = "fit",
+background = FALSE)`. Aquesta crida queda ocupada fins que acaba la cua; el
+terminal persistent en conserva el procés. El mode de segon pla és per a
+llançadors que permeten processos independents i desactiva explícitament
+`cleanup`, `cleanup_tree` i `poll_connection`.
+
 Un controlador executa un ajust alhora, en processos nous que alliberen la memòria
 entre etapes. Detecta propietaris de processos de les altres cues del projecte i
 refusa iniciar si n'hi ha de vius. Admissió predeterminada: 35 GiB RAM i 40 GiB de
