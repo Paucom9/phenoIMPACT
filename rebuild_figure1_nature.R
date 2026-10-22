@@ -25,7 +25,7 @@ rebuild_figure1_nature <- function(
     candidates <- candidates[grepl("^figure1_nature_", basename(candidates))]
     candidates <- candidates[vapply(candidates, function(folder)
       all(file.exists(file.path(folder, paste0("fig1", rep(c("a","b","c"), each=2),
-        rep(c(".png",".pdf"), 3))))), logical(1))]
+        rep(c(".png",".pdf"), 3)))), logical(1))]
     if (length(candidates)) cached <- candidates[which.max(file.info(candidates)$mtime)]
   }
   plots <- NULL
