@@ -9,7 +9,7 @@ plot_environment_mundlak_nature <- function(
       "environment_mundlak_by_voltinism_qc_final_15km", "run_de0890c85d4a"),
     out_dir = file.path(environment_run, "figures_environment_nature"),
     font_family = "Arial", width_mm = 180, height_mm = 140,
-    base_size = 9, dpi = 600, gradient_limit = 2,
+    base_size = 9, dpi = 300, gradient_limit = 2,
     range_probs = c(.025, .975), show_plot = interactive()) {
 
   need <- function(ok, msg) if (!isTRUE(ok)) stop(msg, call. = FALSE)
@@ -133,6 +133,7 @@ plot_environment_mundlak_nature <- function(
     lim <- rowlimits[[if (i <= 2) 1 else 2]]
     plots[[i]] <- ggplot2::ggplot(z, ggplot2::aes(x, slope, colour = moderator, fill = moderator)) +
       ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50", linewidth = .36) +
+      ggplot2::geom_vline(xintercept = 0, linetype = "dashed", colour = "grey65", linewidth = .36) +
       ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper), alpha = .10,
                            colour = NA, show.legend = FALSE) +
       ggplot2::geom_line(ggplot2::aes(linetype = line_type), linewidth = .6) +
